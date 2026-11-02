@@ -1,0 +1,45 @@
+# US equity market rules (second stage, M4). Same keys as cn.yaml.
+market: us
+timezone: America/New_York
+currency: USD
+
+session:
+  bars_per_day: 390
+  bar_label: end                 # ts = bar end; 09:31 covers 09:30-09:31
+  open_auction_bar: null         # opening cross is inside the 09:31 bar for most vendors; check vendor
+  regular: ["09:31", "16:00"]
+  close_auction: {bar: "16:00"}
+
+decision_time: "15:50"
+execution: close                 # MOC orders at the closing cross
+
+settlement:                      # matters for cash only; day trading is allowed
+  - {until: "2024-05-27", rule: T+2}
+  - {from: "2024-05-28", rule: T+1}
+short_selling: true
+lot_size: 1
+
+price_limits: null               # no daily limits; LULD single-stock pauses and market-wide halts exist
+
+tradability:
+  no_buy_at_up_limit: false
+  no_sell_at_down_limit: false
+  no_trade_when_suspended: true
+  min_price: 5.0
+
+costs:
+  commission: 0.00005            # ~0.5 bp per side
+  slippage: 0.0003               # per side
+  sec_fee_sell: 0.0000278        # SEC Section 31 fee, sell side (rate changes yearly; fixed here)
+  borrow_fee_annual: 0.005       # fixed general-collateral assumption for shorts
+
+universe:
+  top_n_by_mktcap: 3000
+  min_price: 5.0
+  common_stock_only: true
+  id_field: permno               # join on a permanent ID, never on ticker
+
+portfolio:
+  type: long_short_top_bottom    # top group minus bottom group
+  n_groups: 10
+  weighting: equal

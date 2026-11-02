@@ -1,0 +1,62 @@
+# A-share market rules. Read by minute_agent.market; the evaluator uses costs,
+# tradability and portfolio settings from here.
+market: cn
+timezone: Asia/Shanghai
+currency: CNY
+
+session:
+  bars_per_day: 241
+  bar_label: end                 # ts = bar end; 09:31 covers 09:30-09:31
+  open_auction_bar: "09:30"      # opening call auction print (matched at 09:25)
+  morning: ["09:31", "11:30"]
+  afternoon: ["13:01", "15:00"]
+  close_auction:                 # 14:57-15:00; bars 14:58/14:59 have zero volume
+    bar: "15:00"
+    since: {SZ: "2006-07-01", SH: "2018-08-20", BJ: "2021-11-15"}
+
+decision_time: "14:50"           # features may only use bars with end time <= this
+decision_time_alt: "14:56"       # optional: just before the closing auction
+execution: close                 # orders fill at today's close (closing auction)
+
+settlement: T+1                  # shares bought today can be sold tomorrow at the earliest
+short_selling: false             # no stock shorting in the pipeline (margin shorting ignored)
+lot_size: 100
+
+# Daily price limits as a fraction of pre_close. `null` = no limit.
+price_limits:
+  main: 0.10
+  main_st: 0.05
+  gem:                           # ChiNext
+    - {until: "2020-08-23", limit: 0.10, st: 0.05}
+    - {from: "2020-08-24", limit: 0.20, st: 0.20}
+  star: {limit: 0.20, st: 0.20}  # STAR, from 2019-07-22
+  bse: {limit: 0.30, st: 0.30}   # Beijing, from 2021-11-15
+  ipo_first_days:
+    main: {days: 1, up: 0.44, down: -0.36}       # registration regime from 2023-04-10: 5 days no limit
+    gem_from_2020_08_24: {days: 5, limit: null}
+    star: {days: 5, limit: null}
+    bse: {days: 1, limit: null}
+
+tradability:
+  no_buy_at_up_limit: true       # can't buy if price at decision time is at the up limit
+  no_sell_at_down_limit: true    # can't sell at the down limit (reported, see evaluator)
+  no_trade_when_suspended: true
+
+# Costs as fractions of traded value, per side unless noted.
+costs:
+  commission: 0.00025            # per side
+  slippage: 0.0002               # per side, at close / open auction
+  stamp_duty_sell:               # sell side only
+    - {until: "2023-08-27", rate: 0.001}
+    - {from: "2023-08-28", rate: 0.0005}
+
+universe:
+  exclude_st: true
+  exclude_suspended: true
+  min_listed_days: 60            # trading days since listing
+
+portfolio:
+  type: long_top_vs_universe     # M1: long the top group, benchmark = equal-weight universe
+  # later: hedged_futures (IF/IC/IM, minus basis)
+  n_groups: 10
+  weighting: equal
