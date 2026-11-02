@@ -1,6 +1,7 @@
 """Hash lock for the evaluator source.
 
-FROZEN.sha256 lists the sha256 of every .py file in this package. The runner
+FROZEN.sha256 lists the sha256 of every .py file in this package and in the
+backtest engine (minute_agent/backtest). The runner
 refuses to run, and the test suite fails, if the files don't match. After an
 intentional, human-reviewed change, re-freeze with:
 
@@ -14,6 +15,7 @@ import sys
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent
+LOCKED_DIRS = [PKG, PKG.parent / "backtest"]
 MANIFEST = PKG / "FROZEN.sha256"
 
 
@@ -22,7 +24,7 @@ class EvaluatorModifiedError(RuntimeError):
 
 
 def _files() -> list[Path]:
-    return sorted(p for p in PKG.glob("*.py"))
+    return sorted(p for d in LOCKED_DIRS for p in d.glob("*.py"))
 
 
 def _hash(p: Path) -> str:
@@ -31,7 +33,7 @@ def _hash(p: Path) -> str:
 
 
 def current() -> dict[str, str]:
-    return {p.name: _hash(p) for p in _files()}
+    return {f"{p.parent.name}/{p.name}": _hash(p) for p in _files()}
 
 
 def combined_hash(h: dict[str, str] | None = None) -> str:
