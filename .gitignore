@@ -1,9 +1,9 @@
 # Market data and generated artifacts stay out of git
-data/
-cache/
-features/
-runs/
-models/
+/data/
+/cache/
+/features/
+/runs/
+/models/
 mlruns/
 *.parquet
 *.csv
@@ -26,3 +26,5 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+*.egg-info/
+condaenv.*.requirements.txt
