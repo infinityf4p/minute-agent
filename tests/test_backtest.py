@@ -117,3 +117,13 @@ def test_t0_failed_buyback_settles_next_open():
     # could not buy back on day 0 (limit-up), bought at next open 12.0: loss 50k shares x 2
     assert daily["net"].sum() == pytest.approx(-100_000.0)
     assert summ["carried_overnight_frac"] == 1.0
+
+
+def test_unlisted_names_do_not_poison_the_book():
+    close = np.ones((4, 4)) * 10.0
+    close[:2, 0] = np.nan                                  # stock 0 lists on day 2
+    d = _dense(close=close, open_px=close.copy(), px=close.copy())
+    d.arrays["score"][:2, 0] = np.nan
+    daily, _ = simulate_book(d, {"top_k": 2, "mode": "hold"}, CostModel.load("default"))
+    assert np.isfinite(daily["equity"].to_numpy()).all()
+    assert np.isfinite(daily["excess_net"].to_numpy()).all()

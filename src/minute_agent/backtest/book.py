@@ -196,8 +196,8 @@ def simulate_book(dense: Dense, params: dict, costs: CostModel, capital: float =
         sell_ok = (A["can_sell"][t] > 0) & has_px & (age >= 1)
         orders = np.where(orders > 0, np.where(buy_ok, orders, 0.0), np.where(sell_ok, orders, 0.0))
         orders = np.where(orders < 0, np.maximum(orders, -V), orders)
-        cap_val = np.nan_to_num(A["avail"][t]) * px * cap_part
-        orders = np.clip(orders, -cap_val, cap_val)
+        cap_val = np.nan_to_num(np.nan_to_num(A["avail"][t]) * px * cap_part)   # unlisted names have no price
+        orders = np.nan_to_num(np.clip(orders, -cap_val, cap_val))
         if tcap is not None and np.abs(orders).sum() > float(tcap) * E_dec:
             orders *= float(tcap) * E_dec / np.abs(orders).sum()
         buys = np.clip(orders, 0, None)
