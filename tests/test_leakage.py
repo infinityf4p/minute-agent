@@ -61,7 +61,7 @@ def cheat_full_sample_zscore(m, daily, d):
 # --- tests -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", sorted(n for n in ops.REGISTRY))
+@pytest.mark.parametrize("name", sorted(n for n in ops.REGISTRY if n != "custom"))
 def test_registered_ops_pass(data, name):
     minute, daily, dates = data
     defaults = {"daily_lag": {"fields": ["ret", "turnover"], "lags": [1, 5, 20]}}

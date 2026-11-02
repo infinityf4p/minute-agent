@@ -122,6 +122,9 @@ class FeatureCache:
         daily = store.read_daily(self.dataset, start - timedelta(days=DAILY_BUFFER_DAYS), end, symbols=syms)
         dates = leakage.pick_check_dates(minute["date"].unique().to_list(), k=3)
         leakage.check_op(fn, params, minute, daily, self.d, dates, apply_cutoff=True)
+        if name == "custom":
+            # agent-written code must not look past the decision bar even on raw data (v2 rule)
+            leakage.check_op(fn, params, minute, daily, self.d, dates, apply_cutoff=False)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"op": name, "params": params, "checked_dates": [str(x) for x in dates]}))
         stats.seconds_leak_check += time.time() - t0

@@ -154,6 +154,72 @@ def op_daily_lag(m, daily, d, fields=("ret", "turnover"), lags=(1, 5, 20)):
     return keys.join(out, on=KEYS, how="left")
 
 
+@register("return_moments")
+def op_return_moments(m, daily, d, window_min=(240,)):
+    """Skewness and kurtosis of 1-minute returns over the last w bars."""
+    out = []
+    for w in window_min:
+        win = pl.col("bidx") > d - w
+        out += [pl.col("lr").filter(win).skew().alias(f"skew_{w}"),
+                pl.col("lr").filter(win).kurtosis().alias(f"kurt_{w}")]
+    return m.group_by(KEYS).agg(out)
+
+
+@register("pv_corr")
+def op_pv_corr(m, daily, d, window_min=(240,)):
+    """Correlation of |1-min return| and volume, and of return and volume, over the last w bars."""
+    out = []
+    for w in window_min:
+        win = pl.col("bidx") > d - w
+        out += [pl.corr(pl.col("lr").filter(win).abs(), pl.col("volume").filter(win)).alias(f"pvabs_{w}"),
+                pl.corr(pl.col("lr").filter(win), pl.col("volume").filter(win)).alias(f"pvsgn_{w}")]
+    return m.group_by(KEYS).agg(out)
+
+
+@register("price_position")
+def op_price_position(m, daily, d):
+    """Where the decision price sits in today's range so far, and today's range itself."""
+    hi, lo, c = pl.col("high").max(), pl.col("low").min(), pl.col("close").last()
+    return m.group_by(KEYS).agg(
+        _safe_div(c - lo, hi - lo).alias("pos_in_range"),
+        ((hi - lo) / c).alias("day_range"),
+        (c / pl.col("open").first() - 1).alias("ret_from_open"),
+    )
+
+
+@register("signed_volume")
+def op_signed_volume(m, daily, d, window_min=(30, 240)):
+    """Volume-weighted direction: sum(volume * sign(r)) / sum(volume) over the last w bars."""
+    out = []
+    for w in window_min:
+        win = pl.col("bidx") > d - w
+        out.append(_safe_div((pl.col("volume") * pl.col("lr").sign()).filter(win).sum(),
+                             pl.col("volume").filter(win).sum()).alias(f"sv_{w}"))
+    return m.group_by(KEYS).agg(out)
+
+
+@register("daily_stats")
+def op_daily_stats(m, daily, d, windows=(5, 20, 60)):
+    """Daily-bar history up to the day before: volatility, illiquidity, distance to range."""
+    dl = daily.sort(["symbol", "date"]).with_columns(
+        (pl.col("close") * pl.col("adj_factor")).alias("_ac"),
+    ).with_columns(
+        pl.col("_ac").log().diff().over("symbol").alias("_lr"),
+    )
+    exprs = []
+    for w in windows:
+        w = int(w)
+        exprs += [
+            pl.col("_lr").rolling_std(w, min_samples=max(2, w // 2)).shift(1).over("symbol").alias(f"ds_vol_{w}"),
+            (pl.col("_lr").abs() / (pl.col("amount") / 1e8)).replace([float("inf")], None)
+            .rolling_mean(w, min_samples=max(1, w // 2)).shift(1).over("symbol").alias(f"ds_illiq_{w}"),
+            (pl.col("_ac") / pl.col("_ac").rolling_max(w, min_samples=1) - 1).shift(1).over("symbol").alias(f"ds_offhigh_{w}"),
+            (pl.col("_ac") / pl.col("_ac").rolling_min(w, min_samples=1) - 1).shift(1).over("symbol").alias(f"ds_offlow_{w}"),
+        ]
+    out = dl.with_columns(exprs).select(KEYS + [x.meta.output_name() for x in exprs])
+    return m.select(KEYS).unique().join(out, on=KEYS, how="left")
+
+
 def compute(name: str, m_prepared: pl.DataFrame, daily: pl.DataFrame, d: int, params: dict) -> pl.DataFrame:
     fn, _ = REGISTRY[name]
     out = fn(m_prepared, daily, d, **params)
@@ -163,3 +229,7 @@ def compute(name: str, m_prepared: pl.DataFrame, daily: pl.DataFrame, d: int, pa
 def cutoff(m: pl.DataFrame, d: int) -> pl.DataFrame:
     """Drop every bar after the decision bar. Production code always goes through this."""
     return m.filter(pl.col("bidx") <= d)
+
+
+# M3 operators (sequence buckets, custom features) register themselves on import
+from minute_agent.features import extra_ops  # noqa: E402,F401
