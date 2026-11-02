@@ -70,13 +70,14 @@ class BuildStats:
     per_op_seconds: dict = field(default_factory=dict)
 
 
-def _build_month(dataset: str, d: int, y: int, m: int, m1: date, todo: list[tuple[dict, str]]) -> dict:
+def _build_month(dataset: str, d: int, y: int, m: int, m1: date, todo: list[tuple[dict, str]],
+                 symbols: list[str] | None = None) -> dict:
     """Compute the given op specs for one month and write their parquet files.
     Top-level so it can run in a worker process."""
     t0 = time.time()
     m0 = date(y, m, 1)
-    minute = store.read_minute(dataset, m0, m1, max_bidx=d)
-    daily = store.read_daily(dataset, m0 - timedelta(days=DAILY_BUFFER_DAYS), m1)
+    minute = store.read_minute(dataset, m0, m1, max_bidx=d, symbols=symbols)
+    daily = store.read_daily(dataset, m0 - timedelta(days=DAILY_BUFFER_DAYS), m1, symbols=symbols)
     mp_ = ops.prepare_minute(ops.cutoff(minute, d))
     out = {"month": f"{y}-{m:02d}", "rows": minute.height, "read_s": time.time() - t0, "ops": {}}
     for spec, path in todo:
@@ -93,12 +94,20 @@ def _build_month(dataset: str, d: int, y: int, m: int, m1: date, todo: list[tupl
 
 
 class FeatureCache:
-    def __init__(self, dataset: str, market: str = "cn", decision_time: str | None = None):
+    def __init__(self, dataset: str, market: str = "cn", decision_time: str | None = None,
+                 symbols: list[str] | None = None, universe_tag: str | None = None):
+        """symbols/universe_tag: restrict the cache to a fixed symbol subset (e.g. the T0 base pool).
+        The tag becomes part of the cache path, so subsets never mix with full-market caches."""
+        self.symbols = sorted(symbols) if symbols else None
+        if self.symbols and not universe_tag:
+            raise ValueError("a symbol subset needs a universe_tag")
         self.dataset = dataset
         self.rules = load_market(market)
         self.decision_time = decision_time or self.rules.decision_time
         self.d = self.rules.decision_bidx(self.decision_time)
         self.root = cache_root() / "features" / dataset / f"dec{self.decision_time.replace(':', '')}"
+        if self.symbols:
+            self.root = self.root / f"u-{universe_tag}"
 
     def _path(self, key: str, y: int, m: int) -> Path:
         return self.root / key / f"{y}-{m:02d}.parquet"
@@ -116,7 +125,7 @@ class FeatureCache:
         months = store.minute_months(self.dataset)
         y, m = months[len(months) // 2]          # a month in the middle of the readable data
         start, end = date(y, m, 1), _month_end(y, m)
-        minute = store.read_minute(self.dataset, start, end)
+        minute = store.read_minute(self.dataset, start, end, symbols=self.symbols)
         syms = sorted(minute["symbol"].unique().to_list())[:40]
         minute = minute.filter(pl.col("symbol").is_in(syms))
         daily = store.read_daily(self.dataset, start - timedelta(days=DAILY_BUFFER_DAYS), end, symbols=syms)
@@ -148,7 +157,7 @@ class FeatureCache:
                 continue
             todo = [(s, str(self._path(k, y, m))) for s, k in zip(specs, keys) if not self._path(k, y, m).exists()]
             if todo:
-                tasks.append((self.dataset, self.d, y, m, min(_month_end(y, m), end), todo))
+                tasks.append((self.dataset, self.d, y, m, min(_month_end(y, m), end), todo, self.symbols))
             else:
                 stats.months_cached += 1
         t_wall = time.time()
