@@ -10,7 +10,8 @@ dependencies:
   - pyyaml
   - pytest
   - pip
-  - pip:
-      # CUDA build of PyTorch (driver 610.x supports CUDA 12.8)
-      - --index-url https://download.pytorch.org/whl/cu128
-      - torch
+  # GPU stack from conda-forge, not pip: pip's torch bundles Intel's libiomp5md.dll,
+  # which clashes with the LLVM OpenMP used by conda-forge numpy (MKL) and LightGBM
+  # and aborts the process ("OMP: Error #15"). Driver 610.x runs CUDA 13 builds.
+  - pytorch=2.14.1=cuda134*
+  - xgboost=3.4.2=cuda13*

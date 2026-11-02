@@ -1,0 +1,20 @@
+# Same features as baseline_lgbm, MLP trained on the GPU.
+name: baseline_mlp_gpu
+market: cn
+dataset: sim_cn             # switch to the real dataset once M0 is done
+target: overnight           # overnight / next_cc
+universe_filter: {min_price: 2, min_adv_pct: 20}
+features:
+  - {op: ret, window_min: [5, 30, 60, 240]}
+  - {op: realized_vol, window_min: [30, 240]}
+  - {op: vwap_dev, at: decision_time}
+  - {op: volume_profile, buckets: [open30, mid, last30]}
+  - {op: last_n_min_stats, n: 30}
+  - {op: jump_count, threshold_sigma: 4}
+  - {op: daily_lag, fields: [ret, turnover], lags: [1, 5, 20]}
+cross_section_norm: rank
+label_norm: rank
+model: {type: mlp, params: {hidden: [256, 128], dropout: 0.1, lr: 0.001, epochs: 8, batch_size: 4096, device: cuda}}
+train: {window_years: 3, retrain_every: quarter}
+eval_split: valid
+seed: 0
