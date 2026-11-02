@@ -1,0 +1,15 @@
+# PLAN 5.4: daily features only (no minute information), to measure what minute data adds
+name: daily_only_lgbm_next_cc
+target: next_cc
+market: cn
+dataset: cn
+universe_filter: {min_price: 2, min_adv_pct: 20}
+cross_section_norm: rank
+label_norm: rank
+train: {window_years: 3, retrain_every: quarter}
+eval_split: valid
+seed: 0
+features:
+  - {op: daily_lag, fields: [ret, turnover], lags: [1, 2, 3, 5, 10, 20, 60]}
+  - {op: daily_stats, windows: [5, 10, 20, 60, 120]}
+model: {type: lgbm, params: {num_leaves: 63, lr: 0.05, n_estimators: 500}}

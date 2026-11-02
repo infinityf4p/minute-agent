@@ -1,0 +1,14 @@
+# PLAN 5.2: GRU on the intraday sequence up to 14:50 (10-minute buckets), like the overnight project
+name: gru_next_cc
+target: next_cc
+market: cn
+dataset: cn
+universe_filter: {min_price: 2, min_adv_pct: 20}
+cross_section_norm: rank
+label_norm: rank
+train: {window_years: 3, retrain_every: quarter}
+eval_split: valid
+seed: 0
+features:
+  - {op: daily_lag, fields: [ret], lags: [1]}
+model: {type: gru_seq, params: {hidden: 64, layers: 1, dropout: 0.1, lr: 0.001, epochs: 4, batch_size: 2048, with_features: false}}

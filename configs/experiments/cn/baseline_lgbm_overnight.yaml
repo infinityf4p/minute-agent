@@ -1,0 +1,20 @@
+# PLAN 5.1: hand-picked minute features + LightGBM, real data
+name: baseline_lgbm_overnight
+target: overnight
+market: cn
+dataset: cn
+universe_filter: {min_price: 2, min_adv_pct: 20}
+cross_section_norm: rank
+label_norm: rank
+train: {window_years: 3, retrain_every: quarter}
+eval_split: valid
+seed: 0
+features:
+  - {op: ret, window_min: [5, 30, 60, 240]}
+  - {op: realized_vol, window_min: [30, 240]}
+  - {op: vwap_dev, at: decision_time}
+  - {op: volume_profile, buckets: [open30, mid, last30]}
+  - {op: last_n_min_stats, n: 30}
+  - {op: jump_count, threshold_sigma: 4}
+  - {op: daily_lag, fields: [ret, turnover], lags: [1, 5, 20]}
+model: {type: lgbm, params: {num_leaves: 63, lr: 0.05, n_estimators: 500}}
