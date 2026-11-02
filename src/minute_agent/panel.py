@@ -60,7 +60,9 @@ def universe(
     ).select("symbol", "date", "is_st", "is_suspended", "up_limit", "adv20")
 
     sec = security.select("symbol", "list_date")
-    first_idx = np.searchsorted(cal, np.array(sec["list_date"].to_list(), dtype="datetime64[D]"))
+    ld = np.array(sec["list_date"].to_list(), dtype="datetime64[D]")
+    first_idx = np.searchsorted(cal, ld)
+    first_idx = np.where(ld < cal[0], -10**6, first_idx)   # listed before the calendar starts
     sec = sec.with_columns(pl.Series("list_idx", first_idx, dtype=pl.Int64))
     cal_idx = pl.DataFrame({"date": calendar, "cal_idx": np.arange(len(calendar))},
                            schema={"date": pl.Date, "cal_idx": pl.Int64})
