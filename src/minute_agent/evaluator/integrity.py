@@ -41,7 +41,7 @@ def combined_hash(h: dict[str, str] | None = None) -> str:
 
 def freeze() -> str:
     h = current()
-    MANIFEST.write_text("".join(f"{v}  {k}\n" for k, v in sorted(h.items())), encoding="utf-8")
+    MANIFEST.write_text("".join(f"{v}  {k}\n" for k, v in sorted(h.items())), encoding="utf-8", newline="\n")
     return combined_hash(h)
 
 

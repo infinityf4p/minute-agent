@@ -31,6 +31,16 @@ def test_evaluator_is_frozen():
     assert len(verify()) == 16
 
 
+def test_modified_evaluator_is_detected(monkeypatch):
+    from minute_agent.evaluator import integrity
+
+    real = integrity.current()
+    tampered = {**real, "core.py": "0" * 64}
+    monkeypatch.setattr(integrity, "current", lambda: tampered)
+    with pytest.raises(integrity.EvaluatorModifiedError):
+        integrity.verify()
+
+
 def test_perfect_signal():
     p = _panel().with_columns(pl.col("label").alias("score"))
     m = evaluate(p, load_market("cn"), "overnight")
