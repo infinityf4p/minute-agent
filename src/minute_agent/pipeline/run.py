@@ -11,6 +11,7 @@ Reads never go past the phase end, so a target that needs later data is dropped
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import time
@@ -371,6 +372,8 @@ def run_pipeline(cfg_in: dict, settings: spec.Settings, phase: str = "folds", so
             pred = pl.concat([p for p in preds if p.height])
             ic[role] = ic_stats(pred)
             pieces[role] = (pred, ex, auc, daily, b[0])
+            del df, preds          # free the training panel before the next role (T4 has two)
+            gc.collect()
         t0 = time.time()
         results = {}
         for level, cm in (("base", costs), ("x2", CostModel({**costs.raw, "cost_multiplier": 2 * costs.raw.get("cost_multiplier", 1.0)})),

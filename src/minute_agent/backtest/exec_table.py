@@ -61,21 +61,28 @@ def _month_exec(dataset: str, m0: date, m1: date, decisions: list[int], style: s
         (pl.col("close") / pl.col("close").shift(1)).log().over("symbol", "date").alias("lr"),
         pl.when(pl.col("volume") > 0).then(pl.col("amount") / pl.col("volume")).alias("bvwap"),
     ).join(_limits(dataset, m0, m1, symbols), on=["symbol", "date"], how="left")
-    exec_map = pl.DataFrame([(d, b) for d in decisions for b in range(d + 1, min(240, d + k) + 1)],
-                            schema={"d": pl.Int16, "bidx": pl.Int16}, orient="row")
-    sig_map = pl.DataFrame([(d, b) for d in decisions for b in range(max(1, d - 29), d + 1)],
-                           schema={"d": pl.Int16, "bidx": pl.Int16}, orient="row")
     traded = pl.col("volume") > 0
-    ex = m.join(exec_map, on="bidx").group_by("symbol", "date", "d").agg(
-        (pl.col("open").filter(traded).first() if style == "next_open"
-         else (pl.col("amount").filter(traded).sum() / pl.col("volume").filter(traded).sum()) if style == "next_vwap"
-         else pl.col("bvwap").filter(traded).mean()).alias("px"),
-        pl.col("volume").sum().alias("avail"),
-        (traded & (pl.col("low") < pl.col("up_limit").fill_null(float("inf")) - EPS)).any().alias("can_buy"),
-        (traded & (pl.col("high") > pl.col("down_limit").fill_null(0.0) + EPS)).any().alias("can_sell"),
-    )
-    sg = m.join(sig_map, on="bidx").group_by("symbol", "date", "d").agg(pl.col("lr").std().alias("sigma"))
-    return ex.join(sg, on=["symbol", "date", "d"], how="left").with_columns(
+    up = pl.col("up_limit").fill_null(float("inf"))
+    dn = pl.col("down_limit").fill_null(0.0)
+    if style == "next_open":
+        px = pl.col("open").filter(traded).first()
+    elif style == "next_vwap":
+        px = pl.col("amount").filter(traded).sum() / pl.col("volume").filter(traded).sum()
+    else:
+        px = pl.col("bvwap").filter(traded).mean()
+    out = []
+    for d in decisions:   # one decision bar at a time keeps the peak memory to one month of bars
+        ex = m.filter(pl.col("bidx").is_between(d + 1, min(240, d + k))).group_by("symbol", "date").agg(
+            px.alias("px"),
+            pl.col("volume").sum().alias("avail"),
+            (traded & (pl.col("low") < up - EPS)).any().alias("can_buy"),
+            (traded & (pl.col("high") > dn + EPS)).any().alias("can_sell"),
+        )
+        sg = m.filter(pl.col("bidx").is_between(max(1, d - 29), d)).group_by("symbol", "date").agg(
+            pl.col("lr").std().alias("sigma"))
+        out.append(ex.join(sg, on=["symbol", "date"], how="left").with_columns(pl.lit(d, dtype=pl.Int16).alias("d")))
+    del m
+    return pl.concat(out).select("symbol", "date", "d", "px", "avail", "can_buy", "can_sell", "sigma").with_columns(
         pl.col("px").fill_nan(None)).sort("symbol", "date", "d")
 
 

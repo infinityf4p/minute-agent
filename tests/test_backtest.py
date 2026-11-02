@@ -145,3 +145,23 @@ def test_t0_partial_flatten_is_retried():
                                                     "flatten_at": 225}, ZERO)
     assert daily["net"].sum() == pytest.approx(50_000.0)   # 30k at 9 at 14:45, 20k at 9 at 14:50
     assert summ["round_trips"] == 1 and summ["carried_overnight_frac"] == 0
+
+
+def test_exec_table_matches_direct_computation(sandbox):
+    from minute_agent.backtest.exec_table import auction_table, exec_table
+    from minute_agent.data import store
+    s, e = date(2018, 8, 1), date(2018, 8, 31)
+    ex = exec_table("tiny", s, e, [100, 230], "next_vwap")
+    tw = exec_table("tiny", s, e, [230], "twap5")
+    m = store.read_minute("tiny", s, e)
+    row = ex.filter((pl.col("d") == 230)).row(0, named=True)
+    bars = m.filter((pl.col("symbol") == row["symbol"]) & (pl.col("date") == row["date"]))
+    b231 = bars.filter(pl.col("bidx") == 231)
+    assert row["px"] == pytest.approx(b231["amount"][0] / b231["volume"][0])
+    assert row["avail"] == pytest.approx(b231["volume"][0])
+    w = bars.filter(pl.col("bidx").is_between(231, 235) & (pl.col("volume") > 0))
+    trow = tw.filter((pl.col("symbol") == row["symbol"]) & (pl.col("date") == row["date"])).row(0, named=True)
+    assert trow["px"] == pytest.approx((w["amount"] / w["volume"]).mean())
+    auc = auction_table("tiny", s, e)
+    arow = auc.filter((pl.col("symbol") == row["symbol"]) & (pl.col("date") == row["date"])).row(0, named=True)
+    assert arow["open_px"] == bars.filter(pl.col("bidx") == 0)["close"][0]
