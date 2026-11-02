@@ -25,7 +25,9 @@ lot_size: 100
 # Daily price limits as a fraction of pre_close. `null` = no limit.
 price_limits:
   main: 0.10
-  main_st: 0.05
+  main_st:                       # main-board ST (risk warning)
+    - {until: "2026-07-03", limit: 0.05}
+    - {from: "2026-07-06", limit: 0.10}   # observed in the data
   gem:                           # ChiNext
     - {until: "2020-08-23", limit: 0.10, st: 0.05}
     - {from: "2020-08-24", limit: 0.20, st: 0.20}

@@ -40,6 +40,9 @@ MINUTE_DIR = RAW / "沪深分钟数据" / "Stock_1min_2000-now"
 
 GEM_REFORM = date(2020, 8, 24)
 MAIN_REGISTRATION = date(2023, 4, 10)
+# Main-board ST limit went from 5% to 10% on 2026-07-06 (seen in the data: ST-named stocks start moving
+# beyond +-5% that day, never beyond +-10%). After it, ST can no longer be inferred from price limits.
+ST_10PCT_FROM = date(2026, 7, 6)
 
 
 def board_of(symbol: str) -> str:
@@ -93,15 +96,17 @@ def infer_st(d: pl.DataFrame) -> pl.DataFrame:
     dn5 = (pl.col("close") - round_price(pre * 0.95)).abs() < 0.005
     beyond = (pl.col("high") / pre - 1 > 0.052) | (pl.col("low") / pre - 1 < -0.052)
     hit = ((up5 & (pl.col("close") >= pl.col("high") - 1e-9)) | (dn5 & (pl.col("close") <= pl.col("low") + 1e-9))) & ~beyond
-    applicable = (pl.col("board") == "main") | ((pl.col("board") == "gem") & (pl.col("date") < GEM_REFORM))
+    applicable = ((pl.col("board") == "main") | ((pl.col("board") == "gem") & (pl.col("date") < GEM_REFORM)))         & (pl.col("date") < ST_10PCT_FROM)
     d = d.sort("symbol", "date").with_columns(
         hit.fill_null(False).alias("_hit"), beyond.fill_null(False).alias("_beyond")
     ).with_columns(pl.col("_beyond").cast(pl.Int32).cum_sum().over("symbol").alias("_seg"))
     d = d.with_columns(pl.col("_hit").cast(pl.Int32).cum_sum().over("symbol", "_seg").alias("_hits"))
     st_after_close = (pl.col("_hits") >= 2) & applicable
-    return d.with_columns(
-        st_after_close.shift(1).over("symbol").fill_null(False).alias("is_st")
-    ).drop("_hit", "_beyond", "_seg", "_hits")
+    d = d.with_columns(st_after_close.shift(1).over("symbol").fill_null(False).alias("is_st"))
+    # after the switch, keep the last state inferred before it (point-in-time; stale for new ST cases)
+    frozen = pl.when(pl.col("date") < ST_10PCT_FROM).then(pl.col("is_st")).otherwise(None)
+    d = d.with_columns(frozen.forward_fill().over("symbol").fill_null(False).alias("is_st"))
+    return d.drop("_hit", "_beyond", "_seg", "_hits")
 
 
 def limits(d: pl.DataFrame) -> pl.DataFrame:
@@ -111,7 +116,7 @@ def limits(d: pl.DataFrame) -> pl.DataFrame:
     pct = (
         pl.when(b == "star").then(0.20)
         .when((b == "gem") & (dt >= GEM_REFORM)).then(0.20)
-        .when(pl.col("is_st")).then(0.05)
+        .when(pl.col("is_st") & (dt < ST_10PCT_FROM)).then(0.05)
         .otherwise(0.10)
     )
     no_limit = (
