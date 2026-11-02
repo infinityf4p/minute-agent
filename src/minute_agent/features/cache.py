@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -65,7 +66,30 @@ class BuildStats:
     seconds_read: float = 0.0
     seconds_compute: float = 0.0
     seconds_leak_check: float = 0.0
+    seconds_wall: float = 0.0          # wall time of the month loop (read/compute are summed over workers)
     per_op_seconds: dict = field(default_factory=dict)
+
+
+def _build_month(dataset: str, d: int, y: int, m: int, m1: date, todo: list[tuple[dict, str]]) -> dict:
+    """Compute the given op specs for one month and write their parquet files.
+    Top-level so it can run in a worker process."""
+    t0 = time.time()
+    m0 = date(y, m, 1)
+    minute = store.read_minute(dataset, m0, m1, max_bidx=d)
+    daily = store.read_daily(dataset, m0 - timedelta(days=DAILY_BUFFER_DAYS), m1)
+    mp_ = ops.prepare_minute(ops.cutoff(minute, d))
+    out = {"month": f"{y}-{m:02d}", "rows": minute.height, "read_s": time.time() - t0, "ops": {}}
+    for spec, path in todo:
+        t1 = time.time()
+        name, params = normalize_spec(spec)
+        res = ops.compute(name, mp_, daily, d, params).filter(pl.col("date").is_between(m0, m1))
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        res.write_parquet(tmp, compression="zstd")
+        os.replace(tmp, p)          # never leave a half-written cache file
+        out["ops"][name] = out["ops"].get(name, 0.0) + time.time() - t1
+    return out
 
 
 class FeatureCache:
@@ -104,7 +128,10 @@ class FeatureCache:
 
     # -- build / load -------------------------------------------------------
 
-    def build(self, specs: list[dict], start: date, end: date, verbose: bool = False) -> BuildStats:
+    def build(self, specs: list[dict], start: date, end: date, verbose: bool = False,
+              workers: int = 1) -> BuildStats:
+        """Compute missing (op, month) files. workers > 1 runs months in separate
+        processes; each process holds one month of minute data in memory."""
         split.check_range(start, end)
         specs = [{"op": "base"}] + [s for s in specs if s["op"] != "base"]
         stats = BuildStats()
@@ -112,34 +139,43 @@ class FeatureCache:
             self.ensure_checked(s, stats)
         keys = [op_key(s, self.decision_time) for s in specs]
         on_disk = set(store.minute_months(self.dataset))
+        tasks = []
         for y, m in _months(start, end):
             if (y, m) not in on_disk:
                 continue
-            todo = [(s, k) for s, k in zip(specs, keys) if not self._path(k, y, m).exists()]
-            if not todo:
+            todo = [(s, str(self._path(k, y, m))) for s, k in zip(specs, keys) if not self._path(k, y, m).exists()]
+            if todo:
+                tasks.append((self.dataset, self.d, y, m, min(_month_end(y, m), end), todo))
+            else:
                 stats.months_cached += 1
-                continue
-            t0 = time.time()
-            m0, m1 = date(y, m, 1), min(_month_end(y, m), end)
-            minute = store.read_minute(self.dataset, m0, m1, max_bidx=self.d)
-            daily = store.read_daily(self.dataset, m0 - timedelta(days=DAILY_BUFFER_DAYS), m1)
-            mp = ops.prepare_minute(ops.cutoff(minute, self.d))
-            stats.seconds_read += time.time() - t0
-            stats.minute_rows += minute.height
-            for s, k in todo:
-                t1 = time.time()
-                name, params = normalize_spec(s)
-                out = ops.compute(name, mp, daily, self.d, params)
-                out = out.filter(pl.col("date").is_between(m0, m1))
-                p = self._path(k, y, m)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                out.write_parquet(p, compression="zstd")
-                dt = time.time() - t1
-                stats.seconds_compute += dt
-                stats.per_op_seconds[name] = stats.per_op_seconds.get(name, 0.0) + dt
-            stats.months_built += 1
-            if verbose:
-                print(f"  features {y}-{m:02d}: {minute.height:,} rows, {time.time() - t0:.1f}s", flush=True)
+        t_wall = time.time()
+        if workers <= 1 or len(tasks) <= 1:
+            results = map(lambda t: _build_month(*t), tasks)
+        else:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor
+
+            from minute_agent._mp import init_worker
+
+            threads = max(1, (os.cpu_count() or 4) // workers)
+            ex = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
+                                     initializer=init_worker, initargs=(threads,))
+            results = ex.map(_build_month, *zip(*tasks))
+        try:
+            for r in results:
+                stats.months_built += 1
+                stats.minute_rows += r["rows"]
+                stats.seconds_read += r["read_s"]
+                for name, dt in r["ops"].items():
+                    stats.seconds_compute += dt
+                    stats.per_op_seconds[name] = stats.per_op_seconds.get(name, 0.0) + dt
+                if verbose:
+                    print(f"  features {r['month']}: {r['rows']:,} rows, {r['read_s'] + sum(r['ops'].values()):.1f}s",
+                          flush=True)
+        finally:
+            if workers > 1 and len(tasks) > 1:
+                ex.shutdown()
+        stats.seconds_wall = time.time() - t_wall
         return stats
 
     def load(self, specs: list[dict], start: date, end: date, include_base: bool = True) -> pl.DataFrame:
