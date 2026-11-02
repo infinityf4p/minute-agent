@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minute-agent"
+version = "0.1.0"
+description = "Agent that builds and tests minute-level ML factor pipelines (A-share / US)"
+requires-python = ">=3.11"
+
+[project.scripts]
+minute-agent = "minute_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,16 @@
+name: minute-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - polars
+  - pyarrow
+  - lightgbm
+  - pyyaml
+  - pytest
+  - pip
+  - pip:
+      # CUDA build of PyTorch (driver 610.x supports CUDA 12.8)
+      - --index-url https://download.pytorch.org/whl/cu128
+      - torch
