@@ -23,7 +23,7 @@ def main():
     ap.add_argument("--config", default="configs/experiments/baseline_lgbm.yaml")
     ap.add_argument("--start", default="2018-12-01", help="feature build start (3y window before 2022)")
     ap.add_argument("--end", default="2023-12-31")
-    ap.add_argument("--feature-workers", type=int, default=4)
+    ap.add_argument("--feature-workers", type=int, default=3)
     ap.add_argument("--seq-months", type=int, default=3,
                     help="also build this many months single-process, to compare speed")
     ap.add_argument("--out", default=None)

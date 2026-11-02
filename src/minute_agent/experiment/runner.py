@@ -33,7 +33,7 @@ from minute_agent.paths import REPO_ROOT, runs_root
 
 BASE_COLS = {"price_dec", "amt_dec", "last_bidx"}
 DEFAULT_TRAIN_WORKERS = 4      # parallel windows for CPU models
-DEFAULT_FEATURE_WORKERS = 4    # parallel months for the feature cache (each holds a month in RAM)
+DEFAULT_FEATURE_WORKERS = 3    # parallel months; a full-market month needs ~4GB RAM per worker (32GB box)
 EMBARGO_DAYS = 1
 PERIOD_MONTHS = {"month": 1, "quarter": 3, "half": 6, "year": 12}
 

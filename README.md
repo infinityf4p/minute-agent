@@ -42,3 +42,21 @@ conda run -n minute-agent python -m minute_agent.cli ledger                    #
 - 生产路径里，特征算子只拿到决策时点（默认 14:50）及之前的 bar。
 - 每个特征算子第一次进缓存前，都要通过截断测试：在第 T 天的"信息集"（T 天之前的全部数据、T 天 14:50 前的分钟线、T 天开盘前已知的日线字段）上重算，结果必须和用全量数据算的一致。
 - `tests/test_leakage.py` 里有 4 种故意作弊的特征（偷看次日开盘、当天日线收盘价、15:00 收盘竞价、全样本标准化），全部会被拦下。
+
+## GPU 与并行
+
+- GPU 模型：`xgb`（XGBoost CUDA）、`mlp`（PyTorch）。LightGBM 这个构建没有 CUDA，跑在 CPU 上，多个滚动窗口用线程并行训练。
+- PyTorch 和 XGBoost 必须从 conda-forge 装（见 `environment.yml`）。pip 版 torch 自带 Intel OpenMP，和 conda-forge numpy/LightGBM 用的 LLVM OpenMP 冲突，进程会直接中止。
+- 特征缓存按月份多进程计算，默认 3 个进程。全市场规模下每个进程约占 4GB 内存，32GB 机器不要超过 3。
+
+## 测速（模拟数据，5000 只股票，2018-12 到 2023-12）
+
+| 环节 | 耗时 |
+|---|---|
+| 特征冷启动（10.9 亿行分钟线，61 个月，7 个算子，3 进程） | 122 秒 |
+| 一轮训练加评估：XGBoost GPU（8 次滚动重训，每次约 190 万行） | 36 秒 |
+| 一轮：MLP GPU | 55 秒 |
+| 一轮：LightGBM CPU，4 窗口并行 / 单进程 | 71 秒 / 99 秒 |
+| 一轮：线性模型 | 10 秒 |
+
+结果文件在 `runs/benchmark-*.json`，复现用 `scripts/benchmark.py`。
