@@ -13,6 +13,7 @@ import json
 import subprocess
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 import numpy as np
@@ -27,10 +28,12 @@ from minute_agent.experiment import config as C
 from minute_agent.experiment.ledger import Ledger
 from minute_agent.features.cache import FeatureCache
 from minute_agent.market import load_market
-from minute_agent.models import make_model
+from minute_agent.models import cpu_count, make_model
 from minute_agent.paths import REPO_ROOT, runs_root
 
 BASE_COLS = {"price_dec", "amt_dec", "last_bidx"}
+DEFAULT_TRAIN_WORKERS = 4      # parallel windows for CPU models
+DEFAULT_FEATURE_WORKERS = 4    # parallel months for the feature cache (each holds a month in RAM)
 EMBARGO_DAYS = 1
 PERIOD_MONTHS = {"month": 1, "quarter": 3, "half": 6, "year": 12}
 
@@ -58,18 +61,19 @@ def _git_info() -> dict:
         return {"git_commit": None, "git_dirty": None}
 
 
-def build_panel(cfg: dict, start: date, end: date, timings: dict, verbose: bool) -> tuple[pl.DataFrame, list[str]]:
+def build_panel(cfg: dict, start: date, end: date, timings: dict, verbose: bool,
+                feature_workers: int = DEFAULT_FEATURE_WORKERS) -> tuple[pl.DataFrame, list[str]]:
     rules = load_market(cfg["market"])
     fc = FeatureCache(cfg["dataset"], cfg["market"], cfg.get("decision_time"))
 
     t0 = time.time()
-    st = fc.build(cfg["features"], start, end, verbose=verbose)
+    st = fc.build(cfg["features"], start, end, verbose=verbose, workers=feature_workers)
     X = fc.load(cfg["features"], start, end)
     timings["features"] = time.time() - t0
     timings["features_detail"] = {"months_built": st.months_built, "months_cached": st.months_cached,
                                   "minute_rows": st.minute_rows, "read_s": round(st.seconds_read, 2),
                                   "compute_s": round(st.seconds_compute, 2),
-                                  "leak_check_s": round(st.seconds_leak_check, 2)}
+                                  "leak_check_s": round(st.seconds_leak_check, 2), "wall_s": round(st.seconds_wall, 2)}
 
     t0 = time.time()
     cal = store.read_calendar(cfg["dataset"], start - timedelta(days=400), end)
@@ -96,32 +100,61 @@ def build_panel(cfg: dict, start: date, end: date, timings: dict, verbose: bool)
     return df, feat_cols
 
 
+def _fit_window(cfg, df, feat_cols, p, nxt, train_lo, train_end_excl, threads):
+    tr = df.filter(pl.col("date").is_between(train_lo, train_end_excl, closed="left") & pl.col("y").is_not_null())
+    te = df.filter(pl.col("date").is_between(p, nxt, closed="left"))
+    if tr.height == 0 or te.height == 0:
+        return None
+    model = make_model(cfg["model"], seed=int(cfg["seed"]))
+    model.set_threads(threads)
+    model.fit(tr.select(feat_cols).to_numpy(), tr["y"].to_numpy(), feat_cols)
+    score = model.predict(te.select(feat_cols).to_numpy())
+    pred = te.select("date", "symbol", "label", "buyable").with_columns(pl.Series("score", score))
+    return p, tr.height, te.height, pred, model.importance(), model.device
+
+
 def rolling_predict(cfg: dict, df: pl.DataFrame, feat_cols: list[str], cal: list[date],
-                    ev_start: date, ev_end: date, timings: dict, verbose: bool) -> tuple[pl.DataFrame, dict]:
+                    ev_start: date, ev_end: date, timings: dict, verbose: bool,
+                    workers: int | None = None) -> tuple[pl.DataFrame, dict]:
+    """CPU models: windows train in parallel threads (LightGBM/XGBoost release the GIL,
+    so this needs no data copies), cores split evenly. GPU models: one window at a time."""
     t0 = time.time()
     points = retrain_dates(ev_start, ev_end, cfg["train"]["retrain_every"])
     bounds = points[1:] + [ev_end + timedelta(days=1)]
     window = timedelta(days=int(round(365.25 * float(cfg["train"]["window_years"]))))
     cal_arr = np.array(cal, dtype="datetime64[D]")
-    preds, importance, n_train = [], {}, []
+    jobs = []
     for p, nxt in zip(points, bounds):
         k = int(np.searchsorted(cal_arr, np.datetime64(p)))
-        train_end_excl = cal[max(0, k - EMBARGO_DAYS)]
-        tr = df.filter(pl.col("date").is_between(p - window, train_end_excl, closed="left")
-                       & pl.col("y").is_not_null())
-        te = df.filter(pl.col("date").is_between(p, nxt, closed="left"))
-        if tr.height == 0 or te.height == 0:
+        jobs.append((p, nxt, p - window, cal[max(0, k - EMBARGO_DAYS)]))
+
+    device = make_model(cfg["model"]).device
+    ncpu = cpu_count()
+    if device == "cpu" and len(jobs) > 1:
+        w = max(1, min(len(jobs), workers or DEFAULT_TRAIN_WORKERS))
+    else:
+        w = 1
+    threads = max(1, ncpu // w)
+    if w == 1:
+        results = [_fit_window(cfg, df, feat_cols, *j, threads) for j in jobs]
+    else:
+        with ThreadPoolExecutor(max_workers=w) as ex:
+            results = list(ex.map(lambda j: _fit_window(cfg, df, feat_cols, *j, threads), jobs))
+
+    preds, importance, n_train = [], {}, []
+    for r in results:
+        if r is None:
             continue
-        model = make_model(cfg["model"], seed=int(cfg["seed"]))
-        model.fit(tr.select(feat_cols).to_numpy(), tr["y"].to_numpy(), feat_cols)
-        score = model.predict(te.select(feat_cols).to_numpy())
-        preds.append(te.select("date", "symbol", "label", "buyable").with_columns(pl.Series("score", score)))
-        for f, v in model.importance().items():
+        p, ntr, nte, pred, imp, dev = r
+        preds.append(pred)
+        n_train.append(ntr)
+        for f, v in imp.items():
             importance[f] = importance.get(f, 0.0) + v
-        n_train.append(tr.height)
         if verbose:
-            print(f"  retrain {p}: train {tr.height:,} rows, predict {te.height:,} rows", flush=True)
+            print(f"  retrain {p}: train {ntr:,} rows, predict {nte:,} rows ({dev})", flush=True)
     timings["train"] = time.time() - t0
+    timings["train_device"] = device
+    timings["train_workers"] = w
     timings["n_models"] = len(n_train)
     timings["avg_train_rows"] = int(np.mean(n_train)) if n_train else 0
     tot = sum(importance.values()) or 1.0
@@ -130,7 +163,8 @@ def rolling_predict(cfg: dict, df: pl.DataFrame, feat_cols: list[str], cal: list
 
 
 def run(cfg_in, source: str = "human", ledger: Ledger | None = None, verbose: bool = True,
-        save: bool = True) -> dict:
+        save: bool = True, feature_workers: int = DEFAULT_FEATURE_WORKERS,
+        train_workers: int = DEFAULT_TRAIN_WORKERS) -> dict:
     t_all = time.time()
     cfg = C.load(cfg_in)
     chash = C.config_hash(cfg)
@@ -143,9 +177,10 @@ def run(cfg_in, source: str = "human", ledger: Ledger | None = None, verbose: bo
     try:
         ev = split.SPLITS[cfg["eval_split"]]
         start = max(split.TRAIN.start, ev.start - timedelta(days=int(365.25 * float(cfg["train"]["window_years"])) + 10))
-        df, feat_cols = build_panel(cfg, start, ev.end, timings, verbose)
+        df, feat_cols = build_panel(cfg, start, ev.end, timings, verbose, feature_workers)
         cal = store.read_calendar(cfg["dataset"], start, ev.end)
-        pred, importance = rolling_predict(cfg, df, feat_cols, cal, ev.start, ev.end, timings, verbose)
+        pred, importance = rolling_predict(cfg, df, feat_cols, cal, ev.start, ev.end, timings, verbose,
+                                           train_workers)
 
         t0 = time.time()
         rules = load_market(cfg["market"])
