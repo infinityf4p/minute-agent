@@ -1,0 +1,28 @@
+# Market data and generated artifacts stay out of git
+data/
+cache/
+features/
+runs/
+models/
+mlruns/
+*.parquet
+*.csv
+*.h5
+*.feather
+*.db
+*.sqlite
+
+# Secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
