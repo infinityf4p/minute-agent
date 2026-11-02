@@ -47,6 +47,7 @@ PHASES = {
 }
 DATA_START = date(2016, 1, 1)
 FLATTEN_BAR = bar_index_at("cn", spec.FLATTEN_AT)
+FLATTEN_RETRY = [FLATTEN_BAR, bar_index_at("cn", "14:50"), bar_index_at("cn", "14:55")]
 POOL_RANGE = {"dev": (date(2016, 1, 1), date(2023, 12, 31)), "test": (date(2024, 1, 1), date(2026, 10, 31))}
 
 
@@ -146,13 +147,13 @@ def build_panel(cfg, settings, role, bars, start, end, timings, workers, symbols
         ex_bars = [bar_index_at("cn", h) for h in spec.DECISION_TIMES]
     else:
         ex_bars = sorted({bar_index_at("cn", h) for g in spec.T0_GRIDS.values() for h in g}
-                         | {FLATTEN_BAR, bar_index_at("cn", spec.T0_OVERNIGHT_DECISION)})
+                         | set(FLATTEN_RETRY) | {bar_index_at("cn", spec.T0_OVERNIGHT_DECISION)})
     ex = exec_table(settings.dataset, start, end, ex_bars, style, symbols=symbols, universe_tag=tag or "all")
     auc = auction_table(settings.dataset, start, end, symbols=symbols, universe_tag=tag or "all")
     cal = store.read_calendar(settings.dataset, start - timedelta(days=400), end)
     daily = store.read_daily(settings.dataset, start - timedelta(days=60), end, symbols=symbols)
     sec = store.read_security(settings.dataset)
-    ex = ex.filter(pl.col("d").is_in(sorted(set(bars) | ({FLATTEN_BAR} if role == "t0" else set()))))
+    ex = ex.filter(pl.col("d").is_in(sorted(set(bars) | (set(FLATTEN_RETRY) if role == "t0" else set()))))
     lab = make_labels(target, ex.filter(pl.col("d").is_in(bars)) if target["kind"] not in ("intraday", "to_flatten")
                       else ex, auc, daily, cal)
     lab = lab.filter(pl.col("d").is_in(bars))
@@ -291,7 +292,7 @@ def backtest(cfg, settings, costs, pieces) -> tuple[pl.DataFrame, dict]:
             base = pl.DataFrame(rows, schema={"symbol": pl.Utf8, "date": pl.Date, "base_value": pl.Float64}, orient="row")
             base = base.filter(pl.col("symbol").is_in(sig["symbol"].unique()))
         if cfg["t0"]["mode"] == "intraday":
-            fl = ex.filter(pl.col("d") == FLATTEN_BAR).select("symbol", "date", "d").with_columns(pl.lit(None, pl.Float64).alias("score"))
+            fl = ex.filter(pl.col("d").is_in(FLATTEN_RETRY)).select("symbol", "date", "d").with_columns(pl.lit(None, pl.Float64).alias("score"))
             sig = pl.concat([sig.filter(pl.col("d") < FLATTEN_BAR), fl], how="diagonal_relaxed")
         params = {**cfg["t0"], "flatten_at": FLATTEN_BAR}
         ov, st = simulate_t0(base, sig, ex, auc, params, costs, position_sizing=settings.position_sizing)

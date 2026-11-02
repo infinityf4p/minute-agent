@@ -6,8 +6,9 @@ the overlay trades around it and returns the base to its original size:
   buy_first  (正T): buy extra, sell the same amount of old base shares later
 Modes:
   intraday   entries and exits at the decision points; everything is flattened
-             from `flatten_at` (default 14:45); what can't be flattened is
-             settled at the next opening auction (overnight exposure, reported)
+             from `flatten_at` (default 14:45), retried at every later decision point
+             (e.g. 14:50, 14:55) with partial fills under the participation cap; what
+             still can't be flattened is settled at the next opening auction
   overnight  sell part of the base after the decision near the close, buy it
              back at the next opening auction
 
@@ -80,23 +81,34 @@ def simulate_t0(base: pl.DataFrame, signals: pl.DataFrame, exe: pl.DataFrame, au
     wins = np.zeros(M, dtype=int)
     closed = np.zeros(M, dtype=int)
 
-    def close_out(rows, price, ok):
-        rows = rows[ok]
+    leg_pnl = np.zeros(M)   # pnl accumulated by partial exits of the current round trip
+
+    def close_out(rows, price, ok, max_value=None):
+        """Exit (part of) the open leg. With max_value, only that much value is traded now;
+        the rest stays open and is retried at the next decision point."""
+        rows, price = rows[ok], price[ok]
         if len(rows) == 0:
             return
-        val = shares[rows] * price[ok]
+        qty = shares[rows].copy()
+        if max_value is not None:
+            qty = np.minimum(qty, max_value[ok] / price)
+        val = qty * price
         is_sell = state[rows] == 1
         c = costs.trade_cost(val, is_sell, dates[rows])
-        gain = np.where(state[rows] == -1, shares[rows] * (entry_px[rows] - price[ok]),
-                        shares[rows] * (price[ok] - entry_px[rows]))
+        gain = np.where(state[rows] == -1, qty * (entry_px[rows] - price), qty * (price - entry_px[rows]))
         pnl[rows] += gain
         cost[rows] += c
-        wins[rows] += (gain - c > 0)
-        closed[rows] += 1
+        leg_pnl[rows] += gain - c
         n_trades[rows] += 1
-        state[rows] = 0
-        shares[rows] = 0.0
-        trips[rows] += 1
+        shares[rows] -= qty
+        done = shares[rows] <= 1e-9
+        r = rows[done]
+        wins[r] += (leg_pnl[r] > 0)
+        closed[r] += 1
+        state[r] = 0
+        shares[r] = 0.0
+        trips[r] += 1
+        leg_pnl[r] = 0.0
 
     for d in sorted(s["d"].unique().to_list()):
         x = s.filter(pl.col("d") == d)
@@ -123,8 +135,8 @@ def simulate_t0(base: pl.DataFrame, signals: pl.DataFrame, exe: pl.DataFrame, au
                 want_exit |= open_ & (np.nan_to_num(ret, nan=0.0) <= -float(sl))
             if sig_exit:
                 want_exit |= open_ & (((st == -1) & (sc >= mid)) | ((st == 1) & (sc <= mid)))
-            ok = want_exit & np.where(st == -1, can_buy, can_sell) & (shares[rows] * np.nan_to_num(px) <= avail_val + 1e-9)
-            close_out(rows[ok], px[ok], np.ones(ok.sum(), bool))
+            ok = want_exit & np.where(st == -1, can_buy, can_sell) & (avail_val > 0)
+            close_out(rows, px, ok, max_value=avail_val)      # partial fills allowed, rest retried later
 
         # ---- entries
         st = state[rows]
@@ -151,6 +163,7 @@ def simulate_t0(base: pl.DataFrame, signals: pl.DataFrame, exe: pl.DataFrame, au
             state[r] = sign
             c = costs.trade_cost(size[mask], np.full(len(r), sign == -1), dates[r])
             cost[r] += c
+            leg_pnl[r] = -c          # a round trip counts as a win only if it beats both legs' costs
             n_trades[r] += 1
 
     # ---- settle what is still open at the next opening auction (overnight exposure)

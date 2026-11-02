@@ -127,3 +127,21 @@ def test_unlisted_names_do_not_poison_the_book():
     daily, _ = simulate_book(d, {"top_k": 2, "mode": "hold"}, CostModel.load("default"))
     assert np.isfinite(daily["equity"].to_numpy()).all()
     assert np.isfinite(daily["excess_net"].to_numpy()).all()
+
+
+def test_t0_partial_flatten_is_retried():
+    days = [date(2022, 3, 1), date(2022, 3, 2)]
+    base = pl.DataFrame({"symbol": ["a", "a"], "date": days, "base_value": [1e6, 1e6]})
+    ds = [100, 225, 230]
+    sig = pl.DataFrame({"symbol": ["a"] * 3, "date": [days[0]] * 3, "d": ds, "score": [-1.0, None, None]},
+                       schema_overrides={"d": pl.Int64, "score": pl.Float64})
+    # 30,000 shares can trade per bar under a 100% cap; we sold 50,000 at d=100
+    exe = pl.DataFrame({"symbol": ["a"] * 3, "date": [days[0]] * 3, "d": ds, "px": [10.0, 9.0, 9.0],
+                        "avail": [1e9, 30_000.0, 30_000.0], "can_buy": [True] * 3, "can_sell": [True] * 3,
+                        "sigma": [0.001] * 3}, schema_overrides={"d": pl.Int64})
+    auc = pl.DataFrame({"symbol": ["a", "a"], "date": days, "open_px": [10.0, 10.0], "open_can_buy": [True, True],
+                        "open_can_sell": [True, True], "close_px": [10.0, 10.0]})
+    daily, summ = simulate_t0(base, sig, exe, auc, {"direction": "sell_first", "size_frac": 0.5, "entry_q": 1.0,
+                                                    "flatten_at": 225}, ZERO)
+    assert daily["net"].sum() == pytest.approx(50_000.0)   # 30k at 9 at 14:45, 20k at 9 at 14:50
+    assert summ["round_trips"] == 1 and summ["carried_overnight_frac"] == 0
