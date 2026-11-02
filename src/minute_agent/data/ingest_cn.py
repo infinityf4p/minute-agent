@@ -235,7 +235,7 @@ def _write_parts(dataset: str, df: pl.DataFrame, tag: str) -> None:
         tmp.replace(p / f"part-{tag}.parquet")
 
 
-def ingest_minute_zip(dataset: str, zip_path: str, batch_members: int = 300) -> dict:
+def ingest_minute_zip(dataset: str, zip_path: str, batch_members: int = 150) -> dict:
     t0 = time.time()
     root = dataset_dir(dataset) / "minute"
     zip_tag = Path(zip_path).stem.replace("_1min", "")

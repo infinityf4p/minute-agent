@@ -29,7 +29,31 @@ def main(argv=None):
     lg = sub.add_parser("ledger", help="show recent ledger rows")
     lg.add_argument("-n", type=int, default=20)
 
+    for cmd in ("agent", "random"):
+        s2 = sub.add_parser(cmd, help=f"{cmd} search session (resumable by --name)")
+        s2.add_argument("--dataset", default="cn")
+        s2.add_argument("--budget", type=int, default=100)
+        s2.add_argument("--name", default=None)
+        s2.add_argument("--seq", action="store_true", help="allow sequence models (M3)")
+        s2.add_argument("--custom", action="store_true", help="allow custom feature code (v2)")
+        s2.add_argument("--seed", type=int, default=0)
+        s2.add_argument("--model", default=None, help="LLM model id (agent only)")
+        s2.add_argument("--timeout", type=int, default=1800)
+
     a = ap.parse_args(argv)
+    if a.cmd in ("agent", "random"):
+        from minute_agent.agent.loop import Session, agent_search, random_search
+        kind = f"{a.cmd}-{'v2' if a.custom else 'v1'}{'-seq' if a.seq else ''}"
+        sess = Session(kind, a.dataset, a.budget, name=a.name, seq_models=a.seq, custom_features=a.custom,
+                       timeout_s=a.timeout)
+        print("session:", sess.name, flush=True)
+        if a.cmd == "random":
+            random_search(sess, seed=a.seed)
+        else:
+            from minute_agent.agent.llm import LLMClient
+            client = LLMClient(**({"model": a.model} if a.model else {}), log_path=sess.dir / "llm_calls.jsonl")
+            agent_search(sess, client)
+        return
     if a.cmd == "sim":
         from minute_agent.data import simulate
         simulate.generate(a.dataset, simulate.SimConfig(
