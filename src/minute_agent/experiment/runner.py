@@ -10,6 +10,7 @@ when the model is trained the night before.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import traceback
@@ -34,7 +35,7 @@ from minute_agent.paths import REPO_ROOT, runs_root
 
 BASE_COLS = {"price_dec", "amt_dec", "last_bidx"}
 DEFAULT_TRAIN_WORKERS = 4      # parallel windows for CPU models
-DEFAULT_FEATURE_WORKERS = 3    # parallel months; a full-market month needs ~4GB RAM per worker (32GB box)
+DEFAULT_FEATURE_WORKERS = int(os.environ.get("MINUTE_AGENT_FEATURE_WORKERS", 3))  # ~4GB RAM per worker at full-market size
 EMBARGO_DAYS = 1
 PERIOD_MONTHS = {"month": 1, "quarter": 3, "half": 6, "year": 12}
 

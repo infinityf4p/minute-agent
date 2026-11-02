@@ -25,6 +25,7 @@ from minute_agent.experiment.ledger import Ledger
 from minute_agent.paths import runs_root
 
 FIXED = {"market": "cn", "eval_split": "valid", "seed": 0}
+INTERRUPTED = "interrupted"
 
 
 def compact(cfg: dict) -> str:
@@ -64,6 +65,9 @@ class Session:
         meta = {"kind": kind, "dataset": dataset, "budget": budget, "seq_models": seq_models,
                 "custom_features": custom_features}
         (self.dir / "session.json").write_text(json.dumps(meta, indent=1))
+        # rows left 'running' by a killed process: mark them, they don't use budget
+        for r in self.ledger.query("SELECT run_id FROM runs WHERE session=? AND status='running'", (self.name,)):
+            self.ledger.fail(r["run_id"], INTERRUPTED)
 
     # -- ledger views ---------------------------------------------------------
 
@@ -71,7 +75,7 @@ class Session:
         return self.ledger.query("SELECT * FROM runs WHERE session=? ORDER BY created_at", (self.name,))
 
     def executed(self) -> int:
-        return len(self.runs())
+        return sum(1 for r in self.runs() if not (r["status"] == "failed" and (r["error"] or "").startswith(INTERRUPTED)))
 
     def done_hashes(self) -> set[str]:
         return {r["config_hash"] for r in self.runs()}
