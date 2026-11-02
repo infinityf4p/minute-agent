@@ -208,7 +208,11 @@ def _minute_frame(raw: pl.DataFrame) -> pl.DataFrame:
     """Vendor minute CSV columns -> standard schema (SH/SZ only)."""
     df = raw.filter(pl.col("code").str.slice(0, 2).is_in(["sh", "sz"])).select(
         (pl.col("code").str.slice(2, 6) + "." + pl.col("code").str.slice(0, 2).str.to_uppercase()).alias("symbol"),
-        pl.col("datetime").str.to_datetime("%Y-%m-%d %H:%M:%S", time_unit="us").alias("ts"),
+        # most files use 2026-09-07 09:30:00, some 2026-09 files use 2026/09/07 09:30
+        pl.coalesce(
+            pl.col("datetime").str.to_datetime("%Y-%m-%d %H:%M:%S", time_unit="us", strict=False),
+            pl.col("datetime").str.to_datetime("%Y/%m/%d %H:%M", time_unit="us", strict=False),
+        ).alias("ts"),
         pl.col("open").cast(pl.Float64), pl.col("high").cast(pl.Float64),
         pl.col("low").cast(pl.Float64), pl.col("close").cast(pl.Float64),
         (pl.col("volume").cast(pl.Float64) * 100).alias("volume"),
@@ -218,7 +222,7 @@ def _minute_frame(raw: pl.DataFrame) -> pl.DataFrame:
     bidx = pl.when(hm.is_between(570, 690)).then(hm - 570).when(hm.is_between(781, 900)).then(hm - 780 + 120)
     return (
         df.with_columns(pl.col("ts").dt.date().alias("date"), bidx.cast(pl.Int16).alias("bidx"))
-        .filter(pl.col("bidx").is_not_null())
+        .filter(pl.col("ts").is_not_null() & pl.col("bidx").is_not_null())
         .unique(["symbol", "ts"], keep="first", maintain_order=True)
     )
 
