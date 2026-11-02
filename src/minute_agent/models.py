@@ -199,7 +199,146 @@ class LinearModel:
         return dict(zip(self.names, map(float, np.abs(self.coef[:-1]))))
 
 
-MODELS = {"lgbm": LGBMModel, "xgb": XGBModel, "mlp": MLPModel, "linear": LinearModel}
+class _SeqBase:
+    """Sequence model on the bucketed intraday sequence (columns sq_<step>_<channel>),
+    optionally concatenated with the tabular features before the output head."""
+
+    needs_seq = True
+
+    def __init__(self, params: dict | None = None, seed: int = 0):
+        params = dict(params or {})
+        self.device = _device(params.pop("device", "auto"))
+        self.lr = float(params.pop("lr", 1e-3))
+        self.epochs = int(params.pop("epochs", 4))
+        self.batch = int(params.pop("batch_size", 2048))
+        self.dropout = float(params.pop("dropout", 0.1))
+        self.with_features = bool(params.pop("with_features", True))
+        self.arch = params
+        self.seed = seed
+
+    def set_threads(self, n: int):
+        pass
+
+    def _split(self, X: np.ndarray, names: list[str]):
+        seq_idx = [i for i, n in enumerate(names) if n.startswith("sq_")]
+        tab_idx = [i for i, n in enumerate(names) if not n.startswith("sq_")] if self.with_features else []
+        steps = sorted({names[i][3:5] for i in seq_idx})
+        T, C = len(steps), len(seq_idx) // max(len(steps), 1)
+        return seq_idx, tab_idx, T, C
+
+    def _tensors(self, X, names):
+        import torch
+
+        seq_idx, tab_idx, T, C = self._split(X, names)
+        S = torch.from_numpy(np.ascontiguousarray(X[:, seq_idx], dtype=np.float32).reshape(len(X), T, C))
+        F = torch.from_numpy(np.nan_to_num(X[:, tab_idx]).astype(np.float32)) if tab_idx else None
+        return S, F, T, C, len(tab_idx)
+
+    def _encoder(self, C):
+        raise NotImplementedError
+
+    def fit(self, X, y, feature_names):
+        import torch
+        from torch import nn
+
+        torch.manual_seed(self.seed)
+        dev = torch.device(self.device)
+        S, F, T, C, nf = self._tensors(X, feature_names)
+        if T == 0:
+            raise ValueError("sequence model needs seq_bars features")
+        self.names = feature_names
+        enc, d_out = self._encoder(C)
+        head_in = d_out + nf
+        self.net = nn.ModuleDict({
+            "enc": enc,
+            "head": nn.Sequential(nn.Linear(head_in, 64), nn.ReLU(), nn.Dropout(self.dropout), nn.Linear(64, 1)),
+        }).to(dev)
+        opt = torch.optim.AdamW(self.net.parameters(), lr=self.lr, weight_decay=1e-4)
+        yt = torch.from_numpy(y.astype(np.float32))
+        n = len(S)
+        g = torch.Generator().manual_seed(self.seed)
+        self.net.train()
+        for _ in range(self.epochs):
+            perm = torch.randperm(n, generator=g)
+            for i in range(0, n, self.batch):
+                idx = perm[i:i + self.batch]
+                s = S[idx].to(dev, non_blocking=True)
+                f = F[idx].to(dev, non_blocking=True) if F is not None else None
+                loss = nn.functional.mse_loss(self._forward(s, f), yt[idx].to(dev))
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
+                opt.step()
+        return self
+
+    def _forward(self, s, f):
+        import torch
+
+        h = self._encode(s)
+        if f is not None:
+            h = torch.cat([h, f], dim=1)
+        return self.net["head"](h).squeeze(-1)
+
+    def predict(self, X):
+        import torch
+
+        S, F, *_ = self._tensors(X, self.names)
+        dev = torch.device(self.device)
+        self.net.eval()
+        out = []
+        with torch.no_grad():
+            for i in range(0, len(S), 16384):
+                s = S[i:i + 16384].to(dev)
+                f = F[i:i + 16384].to(dev) if F is not None else None
+                out.append(self._forward(s, f).float().cpu())
+        return torch.cat(out).numpy().astype(np.float64)
+
+    def importance(self):
+        return {}
+
+
+class GRUSeqModel(_SeqBase):
+    def _encoder(self, C):
+        from torch import nn
+
+        hidden, layers = int(self.arch.get("hidden", 64)), int(self.arch.get("layers", 1))
+        self._gru = nn.GRU(C, hidden, num_layers=layers, batch_first=True,
+                           dropout=self.dropout if layers > 1 else 0.0)
+        return self._gru, hidden
+
+    def _encode(self, s):
+        _, h = self.net["enc"](s)
+        return h[-1]
+
+
+class TransformerSeqModel(_SeqBase):
+    def _encoder(self, C):
+        import torch
+        from torch import nn
+
+        dm, heads, layers = int(self.arch.get("d_model", 64)), int(self.arch.get("heads", 4)), int(self.arch.get("layers", 1))
+
+        class Enc(nn.Module):
+            def __init__(s):
+                super().__init__()
+                s.inp = nn.Linear(C, dm)
+                s.pos = nn.Parameter(torch.zeros(1, 64, dm))
+                layer = nn.TransformerEncoderLayer(dm, heads, dim_feedforward=2 * dm, dropout=self.dropout,
+                                                   batch_first=True)
+                s.tf = nn.TransformerEncoder(layer, layers)
+
+            def forward(s, x):
+                z = s.inp(x) + s.pos[:, : x.shape[1]]
+                return s.tf(z)[:, -1]
+        return Enc(), dm
+
+    def _encode(self, s):
+        return self.net["enc"](s)
+
+
+MODELS = {"lgbm": LGBMModel, "xgb": XGBModel, "mlp": MLPModel, "linear": LinearModel,
+          "gru_seq": GRUSeqModel, "transformer_seq": TransformerSeqModel}
+SEQ_MODEL_TYPES = {"gru_seq", "transformer_seq"}
 
 
 def make_model(spec: dict, seed: int = 0):

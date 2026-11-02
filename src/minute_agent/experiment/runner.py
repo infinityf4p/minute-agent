@@ -28,7 +28,8 @@ from minute_agent.experiment import config as C
 from minute_agent.experiment.ledger import Ledger
 from minute_agent.features.cache import FeatureCache
 from minute_agent.market import load_market
-from minute_agent.models import cpu_count, make_model
+from minute_agent.features.extra_ops import seq_columns
+from minute_agent.models import SEQ_MODEL_TYPES, cpu_count, make_model
 from minute_agent.paths import REPO_ROOT, runs_root
 
 BASE_COLS = {"price_dec", "amt_dec", "last_bidx"}
@@ -36,6 +37,18 @@ DEFAULT_TRAIN_WORKERS = 4      # parallel windows for CPU models
 DEFAULT_FEATURE_WORKERS = 3    # parallel months; a full-market month needs ~4GB RAM per worker (32GB box)
 EMBARGO_DAYS = 1
 PERIOD_MONTHS = {"month": 1, "quarter": 3, "half": 6, "year": 12}
+
+
+OBJECTIVE = "excess_net_sharpe"   # validation objective used to rank pipelines
+
+
+def objective(metrics: dict) -> float:
+    v = metrics.get(OBJECTIVE)
+    return float(v) if v is not None and np.isfinite(v) else float("-inf")
+
+
+def new_run_id(chash: str) -> str:
+    return f"{datetime.now():%Y%m%d-%H%M%S-%f}-{chash}"
 
 
 def retrain_dates(start: date, end: date, every: str) -> list[date]:
@@ -61,14 +74,22 @@ def _git_info() -> dict:
         return {"git_commit": None, "git_dirty": None}
 
 
+def feature_specs(cfg: dict) -> list[dict]:
+    specs = list(cfg["features"])
+    if cfg["model"]["type"] in SEQ_MODEL_TYPES and not any(f["op"] == "seq_bars" for f in specs):
+        specs.append({"op": "seq_bars", "bucket_min": 10})
+    return specs
+
+
 def build_panel(cfg: dict, start: date, end: date, timings: dict, verbose: bool,
                 feature_workers: int = DEFAULT_FEATURE_WORKERS) -> tuple[pl.DataFrame, list[str]]:
     rules = load_market(cfg["market"])
     fc = FeatureCache(cfg["dataset"], cfg["market"], cfg.get("decision_time"))
 
+    specs = feature_specs(cfg)
     t0 = time.time()
-    st = fc.build(cfg["features"], start, end, verbose=verbose, workers=feature_workers)
-    X = fc.load(cfg["features"], start, end)
+    st = fc.build(specs, start, end, verbose=verbose, workers=feature_workers)
+    X = fc.load(specs, start, end)
     timings["features"] = time.time() - t0
     timings["features_detail"] = {"months_built": st.months_built, "months_cached": st.months_cached,
                                   "minute_rows": st.minute_rows, "read_s": round(st.seconds_read, 2),
@@ -88,7 +109,8 @@ def build_panel(cfg: dict, start: date, end: date, timings: dict, verbose: bool,
         .filter(pl.col("in_universe"))
         .join(lab, on=["symbol", "date"], how="left")
     )
-    df = P.cross_section_norm(df, feat_cols, cfg["cross_section_norm"])
+    tab_cols = [c for c in feat_cols if c not in set(seq_columns(feat_cols))]
+    df = P.cross_section_norm(df, tab_cols, cfg["cross_section_norm"])
     if cfg["label_norm"] == "rank":
         y = (pl.col("label").rank().over("date") - 1) / (pl.col("label").count().over("date") - 1).clip(lower_bound=1) - 0.5
     elif cfg["label_norm"] == "raw":
@@ -164,14 +186,16 @@ def rolling_predict(cfg: dict, df: pl.DataFrame, feat_cols: list[str], cal: list
 
 def run(cfg_in, source: str = "human", ledger: Ledger | None = None, verbose: bool = True,
         save: bool = True, feature_workers: int = DEFAULT_FEATURE_WORKERS,
-        train_workers: int = DEFAULT_TRAIN_WORKERS) -> dict:
+        train_workers: int = DEFAULT_TRAIN_WORKERS, run_id: str | None = None,
+        session: str | None = None, rationale: str | None = None) -> dict:
     t_all = time.time()
     cfg = C.load(cfg_in)
     chash = C.config_hash(cfg)
-    run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{chash}"
+    run_id = run_id or new_run_id(chash)
     ev_hash = verify_evaluator()     # refuses to run if the evaluator was modified
     ledger = ledger or Ledger()
-    meta = {"source": source, "evaluator_hash": ev_hash, **_git_info()}
+    meta = {"source": source, "evaluator_hash": ev_hash, "session": session, "rationale": rationale,
+            **_git_info()}
     ledger.start(run_id, cfg, chash, meta)
     timings: dict = {}
     try:
@@ -188,6 +212,7 @@ def run(cfg_in, source: str = "human", ledger: Ledger | None = None, verbose: bo
         timings["eval"] = time.time() - t0
         timings["total"] = time.time() - t_all
         metrics["n_features"] = len(feat_cols)
+        metrics["objective"] = objective(metrics)
         metrics["importance_top"] = dict(list(importance.items())[:15])
         metrics["timings"] = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in timings.items()}
         ledger.finish(run_id, metrics, timings)

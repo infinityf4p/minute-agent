@@ -35,6 +35,8 @@ WHEN OLD.status != 'running'
 BEGIN SELECT RAISE(ABORT, 'finished runs cannot be changed'); END;
 """
 
+EXTRA_COLUMNS = {"session": "TEXT", "rationale": "TEXT", "objective": "REAL"}
+
 HEADLINE = ["ic", "rank_ic", "icir", "excess_net_bp", "excess_net_ann", "excess_net_sharpe", "top_turnover"]
 
 
@@ -48,6 +50,10 @@ class Ledger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            have = {r[1] for r in c.execute("PRAGMA table_info(runs)")}
+            for col, typ in EXTRA_COLUMNS.items():
+                if col not in have:
+                    c.execute(f"ALTER TABLE runs ADD COLUMN {col} {typ}")
 
     def _conn(self):
         return sqlite3.connect(self.path)
@@ -56,23 +62,24 @@ class Ledger:
         with self._conn() as c:
             c.execute(
                 "INSERT INTO runs (run_id, created_at, status, source, dataset, market, target, eval_split,"
-                " config_json, config_hash, evaluator_hash, git_commit, git_dirty)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " config_json, config_hash, evaluator_hash, git_commit, git_dirty, session, rationale)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, datetime.now().isoformat(timespec="seconds"), "running", meta.get("source"),
                  config.get("dataset"), config.get("market"), config.get("target"), config.get("eval_split"),
                  json.dumps(config, sort_keys=True), config_hash, meta.get("evaluator_hash"),
-                 meta.get("git_commit"), int(bool(meta.get("git_dirty")))),
+                 meta.get("git_commit"), int(bool(meta.get("git_dirty"))), meta.get("session"),
+                 meta.get("rationale")),
             )
 
     def finish(self, run_id: str, metrics: dict, timings: dict) -> None:
         flat = {k: v for k, v in metrics.items() if k != "series"}
         with self._conn() as c:
             c.execute(
-                "UPDATE runs SET finished_at=?, status='done', metrics_json=?,"
+                "UPDATE runs SET finished_at=?, status='done', metrics_json=?, objective=?,"
                 + ",".join(f"{k}=?" for k in HEADLINE) + ","
                 + "t_features=?, t_panel=?, t_train=?, t_eval=?, t_total=? WHERE run_id=?",
                 (datetime.now().isoformat(timespec="seconds"), json.dumps(flat, default=str),
-                 *[flat.get(k) for k in HEADLINE],
+                 flat.get("objective"), *[flat.get(k) for k in HEADLINE],
                  *[timings.get(k) for k in ("features", "panel", "train", "eval", "total")], run_id),
             )
 
@@ -89,6 +96,11 @@ class Ledger:
             c.row_factory = sqlite3.Row
             cur = c.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))
             return [dict(r) for r in cur.fetchall()]
+
+    def query(self, sql: str, args: tuple = ()) -> list[dict]:
+        with self._conn() as c:
+            c.row_factory = sqlite3.Row
+            return [dict(r) for r in c.execute(sql, args).fetchall()]
 
     def count(self) -> int:
         with self._conn() as c:
