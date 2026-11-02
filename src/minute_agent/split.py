@@ -12,9 +12,11 @@ the only switch; there is no config key that can open it.
 
 from __future__ import annotations
 
+import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -44,8 +46,31 @@ class LockedDataError(PermissionError):
     """Raised when code tries to read the locked test period."""
 
 
+_FINAL_EVAL = False   # set only inside final_test_unlock()
+
+
 def unlocked(allow_locked: bool) -> bool:
-    return allow_locked and os.environ.get(UNLOCK_ENV) == UNLOCK_PHRASE
+    return (allow_locked or _FINAL_EVAL) and os.environ.get(UNLOCK_ENV) == UNLOCK_PHRASE
+
+
+@contextmanager
+def final_test_unlock(reason: str):
+    """The one sanctioned way to read the locked period for the final evaluation (M5).
+    Needs the env var as well; every opening is appended to runs/locked_test_openings.jsonl."""
+    global _FINAL_EVAL
+    if os.environ.get(UNLOCK_ENV) != UNLOCK_PHRASE:
+        raise LockedDataError(f"set {UNLOCK_ENV} to unlock the test period")
+    from minute_agent.paths import runs_root
+
+    log = runs_root() / "locked_test_openings.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"opened_at": datetime.now().isoformat(timespec="seconds"), "reason": reason}) + "\n")
+    _FINAL_EVAL = True
+    try:
+        yield
+    finally:
+        _FINAL_EVAL = False
 
 
 def check_range(start: date | None, end: date | None, allow_locked: bool = False) -> None:

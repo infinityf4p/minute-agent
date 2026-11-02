@@ -141,7 +141,7 @@ class FeatureCache:
         for s in specs:
             self.ensure_checked(s, stats)
         keys = [op_key(s, self.decision_time) for s in specs]
-        on_disk = set(store.minute_months(self.dataset))
+        on_disk = set(store.minute_months(self.dataset, allow_locked=split._FINAL_EVAL))
         tasks = []
         for y, m in _months(start, end):
             if (y, m) not in on_disk:
@@ -152,6 +152,8 @@ class FeatureCache:
             else:
                 stats.months_cached += 1
         t_wall = time.time()
+        if split._FINAL_EVAL:
+            workers = 1   # the unlock flag lives in this process only
         if workers <= 1 or len(tasks) <= 1:
             results = map(lambda t: _build_month(*t), tasks)
         else:

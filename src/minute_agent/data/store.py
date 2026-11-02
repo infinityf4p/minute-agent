@@ -72,14 +72,14 @@ def _months(start: date, end: date) -> list[tuple[int, int]]:
     return out
 
 
-def minute_months(dataset: str) -> list[tuple[int, int]]:
+def minute_months(dataset: str, allow_locked: bool = False) -> list[tuple[int, int]]:
     """All (year, month) minute partitions on disk that may be opened."""
     root = dataset_dir(dataset) / "minute"
     out = []
     for yd in sorted(root.glob("year=*")):
         for md in sorted(yd.glob("month=*")):
             y, m = int(yd.name[5:]), int(md.name[6:])
-            if split.partition_allowed(y, m):
+            if split.partition_allowed(y, m, allow_locked):
                 out.append((y, m))
     return out
 

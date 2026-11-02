@@ -69,3 +69,24 @@ def test_evaluator_refuses_locked_dates():
     })
     with pytest.raises(split.LockedDataError):
         evaluate(panel, load_market("cn"), "overnight")
+
+
+def test_final_unlock_needs_env(sandbox):
+    with pytest.raises(split.LockedDataError):
+        with split.final_test_unlock("test"):
+            pass
+
+
+def test_final_unlock_scope(sandbox, monkeypatch):
+    monkeypatch.setenv(split.UNLOCK_ENV, split.UNLOCK_PHRASE)
+    with split.final_test_unlock("unit test"):
+        assert store.read_daily("edge", date(2024, 1, 1), date(2024, 1, 31)).height > 0
+    with pytest.raises(split.LockedDataError):   # closed again after the block
+        store.read_daily("edge", date(2024, 1, 1), date(2024, 1, 31))
+
+
+def test_executor_strips_unlock_env(monkeypatch):
+    import inspect
+
+    from minute_agent.agent import executor
+    assert "split.UNLOCK_ENV" in inspect.getsource(executor.execute)
