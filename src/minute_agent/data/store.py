@@ -99,9 +99,8 @@ def read_minute(
     for y, m in _months(start, end):
         if not split.partition_allowed(y, m, allow_locked):
             continue
-        f = dataset_dir(dataset) / "minute" / f"year={y}" / f"month={m:02d}" / "data.parquet"
-        if f.exists():
-            files.append(f)
+        # one data.parquet (simulator) or several part-*.parquet files (vendor ingest)
+        files.extend(sorted((dataset_dir(dataset) / "minute" / f"year={y}" / f"month={m:02d}").glob("*.parquet")))
     cols = columns or list(schema.MINUTE_SCHEMA)
     if not files:
         return pl.DataFrame(schema={c: schema.MINUTE_SCHEMA[c] for c in cols})
