@@ -274,7 +274,7 @@ def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, refle
                     err = "This exact config was already evaluated. Propose something different."
                 else:
                     cfg, rationale = cand, args.get("rationale", "")
-            except (SpaceError, ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
+            except (SpaceError, ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError) as e:
                 err = f"Invalid proposal: {e}"
             for extra in calls[1:]:
                 msgs.append({"role": "tool", "tool_call_id": extra["id"], "content": "Ignored: one proposal per round."})

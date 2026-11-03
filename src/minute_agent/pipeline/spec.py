@@ -108,6 +108,8 @@ def _check_features(feats, s: Settings):
         raise SpaceError(f"features must be a list of 1..{MAX_FEATURE_SPECS} specs")
     seen = set()
     for f in feats:
+        if not isinstance(f, dict):
+            raise SpaceError(f"each feature spec must be an object like {{\"op\": ...}}, got {f!r}")
         op = f.get("op")
         if op == "custom":
             if not s.custom_features:
@@ -161,6 +163,8 @@ def check(cfg: dict, s: Settings) -> dict:
     """Validate a v2 config against the action space and the session switches."""
     allowed = {"template", "decision_time", "t0_grid", "features", "target", "t0_target", "label_norm",
                "cross_section_norm", "model", "train", "portfolio", "t0", "execution", "universe_filter"}
+    if not isinstance(cfg, dict):
+        raise SpaceError("config must be an object")
     extra = set(cfg) - allowed - {"name", "seed"}
     if extra:
         raise SpaceError(f"keys outside the action space: {sorted(extra)}")
