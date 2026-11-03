@@ -1,6 +1,6 @@
 # Workflow 结构与用法
 
-> 本文说明 v2 workflow 是怎么搭起来的、谁能改什么、怎么运行。实验结果见最终报告。
+> 本文说明 v2 workflow 是怎么搭起来的、谁能改什么、怎么运行。实验结果见 [reports/v2_final_report.md](../reports/v2_final_report.md)。
 
 ## 1. 一句话
 
