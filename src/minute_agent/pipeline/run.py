@@ -33,7 +33,7 @@ from minute_agent.data.schema import BAR_TIMES, bar_index_at
 from minute_agent.evaluator.integrity import verify as verify_kernel
 from minute_agent.experiment.ledger import Ledger
 from minute_agent.experiment.runner import BASE_COLS, DEFAULT_FEATURE_WORKERS, _git_info, retrain_dates
-from minute_agent.features.cache import FeatureCache
+from minute_agent.features.atoms import AtomCache
 from minute_agent.features.extra_ops import seq_columns
 from minute_agent.market import load_market
 from minute_agent.models import SEQ_MODEL_TYPES, cpu_count, make_model
@@ -118,7 +118,7 @@ def load_features(settings, specs, bars, start, end, symbols, tag, timings, work
     frames = []
     t0 = time.time()
     for d in bars:
-        fc = FeatureCache(settings.dataset, "cn", hhmm(d), symbols=symbols, universe_tag=tag)
+        fc = AtomCache(settings.dataset, "cn", hhmm(d), symbols=symbols, universe_tag=tag)
         fc.build(specs, start, end, workers=workers)
         x = fc.load(specs, start, end).with_columns(pl.lit(d, dtype=pl.Int16).alias("d"))
         if symbols is not None:
