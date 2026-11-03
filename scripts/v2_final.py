@@ -61,7 +61,7 @@ def main():
             fin = next(c for c in t["candidates"] if c["valid_run"] == t["finalist"])
             entries.append({"label": f"{s}:{tpl}", "session": s, "arm": meta["arm"], "settings": meta["settings"],
                             "config": fin["config"], "valid_objective": fin["valid_objective"],
-                            "n_trials": val[s]["n_trials"], "var_sr": val[s]["var_sr_daily"]})
+                            "n_trials": t["n_trials"], "var_sr": t["var_sr_daily"]})   # per template
     full = spec.Settings(position_sizing=True, allow_t0=True).as_dict()
     for k, cfg in BASELINES.items():
         entries.append({"label": k, "arm": "baseline", "settings": full, "config": cfg})
