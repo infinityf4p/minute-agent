@@ -41,7 +41,6 @@ def main():
     ap.add_argument("--k", type=int, default=3)
     a = ap.parse_args()
     ledger = Ledger()
-    out = {}
     for s in a.sessions:
         rows = ledger.query("SELECT * FROM runs WHERE session=?", (s,))
         n_trials = sum(1 for r in rows if not (r["status"] == "failed" and (r["error"] or "").startswith("interrupted")))
@@ -70,13 +69,12 @@ def main():
                               "config": cfg})
             best = max(evals, key=lambda e: e["valid_objective"] if np.isfinite(e["valid_objective"]) else -1e9)
             sess_out["templates"][tpl] = {"candidates": evals, "finalist": best["valid_run"]}
-        out[s] = sess_out
         print(json.dumps({t: {"finalist": v["finalist"]} for t, v in sess_out["templates"].items()}), flush=True)
-    p = runs_root() / "v2_validation.json"
-    prev = json.loads(p.read_text()) if p.exists() else {}
-    prev.update(out)
-    p.write_text(json.dumps(prev, indent=1, default=str))
-    print("saved", p)
+        p = runs_root() / "v2_validation.json"   # save after every session
+        prev = json.loads(p.read_text()) if p.exists() else {}
+        prev[s] = sess_out
+        p.write_text(json.dumps(prev, indent=1, default=str))
+        print("saved", s, p, flush=True)
 
 
 if __name__ == "__main__":
