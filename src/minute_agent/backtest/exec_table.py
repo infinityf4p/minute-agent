@@ -51,8 +51,24 @@ def _limits(dataset: str, m0: date, m1: date, symbols) -> pl.DataFrame:
                             columns=["symbol", "date", "up_limit", "down_limit"])
 
 
+CHUNK = 800   # stocks per pass, keeps one pass to ~1/6 of a full-market month
+
+
+def _month_symbols(dataset: str, m0: date, m1: date, symbols: list[str] | None) -> list[str]:
+    d = store.read_daily(dataset, m0, m1, symbols=symbols, columns=["symbol", "date", "is_suspended"])
+    return sorted(d.filter(~pl.col("is_suspended"))["symbol"].unique().to_list())
+
+
 def _month_exec(dataset: str, m0: date, m1: date, decisions: list[int], style: str,
                 symbols: list[str] | None) -> pl.DataFrame:
+    syms = _month_symbols(dataset, m0, m1, symbols)
+    parts = [_month_exec_chunk(dataset, m0, m1, decisions, style, syms[i:i + CHUNK])
+             for i in range(0, len(syms), CHUNK)]
+    return pl.concat([p for p in parts if p.height]).sort("symbol", "date", "d")
+
+
+def _month_exec_chunk(dataset: str, m0: date, m1: date, decisions: list[int], style: str,
+                      symbols: list[str]) -> pl.DataFrame:
     k = STYLES[style]
     need = sorted({b for d in decisions for b in range(max(0, d - 29), min(240, d + k) + 1)})
     m = store.read_minute(dataset, m0, m1, symbols=symbols,
@@ -125,10 +141,13 @@ def auction_table(dataset: str, start: date, end: date, symbols: list[str] | Non
             full0 = date(y, m, 1)
             full1 = min((date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)) - timedelta(days=1),
                         split.max_readable_date())
-            mm = store.read_minute(dataset, full0, full1, symbols=symbols,
-                                   columns=["symbol", "date", "bidx", "high", "low", "close", "volume"])
-            mm = mm.filter(pl.col("bidx").is_in([0, 240])).join(_limits(dataset, full0, full1, symbols),
-                                                                on=["symbol", "date"], how="left")
+            syms = _month_symbols(dataset, full0, full1, symbols)
+            mm = pl.concat([
+                store.read_minute(dataset, full0, full1, symbols=syms[i:i + CHUNK],
+                                  columns=["symbol", "date", "bidx", "high", "low", "close", "volume"])
+                .filter(pl.col("bidx").is_in([0, 240]))
+                for i in range(0, len(syms), CHUNK)])
+            mm = mm.join(_limits(dataset, full0, full1, symbols), on=["symbol", "date"], how="left")
             up, dn = pl.col("up_limit").fill_null(float("inf")), pl.col("down_limit").fill_null(0.0)
             t = mm.group_by("symbol", "date").agg(
                 pl.col("close").filter(pl.col("bidx") == 0).first().alias("open_px"),

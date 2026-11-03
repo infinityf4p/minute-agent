@@ -56,6 +56,46 @@ def hhmm(bidx: int) -> str:
     return BAR_TIMES["cn"][bidx].strftime("%H:%M")
 
 
+def _pmc():
+    import ctypes
+    from ctypes import wintypes
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
+                    ("PrivateUsage", ctypes.c_size_t)]
+    k32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+    c = PMC()
+    c.cb = ctypes.sizeof(PMC)
+    psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    return c
+
+
+def peak_memory_gb() -> float:
+    """Peak committed (private) memory of this process, GB (Windows)."""
+    try:
+        return round(_pmc().PeakPagefileUsage / 2**30, 2)
+    except Exception:
+        return float("nan")
+
+
+def memlog(tag: str) -> None:
+    """With MINUTE_AGENT_MEMLOG=1, print committed memory at a pipeline step."""
+    import os
+    if os.environ.get("MINUTE_AGENT_MEMLOG"):
+        try:
+            c = _pmc()
+            print(f"  [mem] {tag}: private {c.PrivateUsage / 2**30:.2f} GB, peak {c.PeakPagefileUsage / 2**30:.2f} GB",
+                  flush=True)
+        except Exception:
+            pass
+
+
 def config_hash(cfg: dict, settings: spec.Settings) -> str:
     blob = json.dumps({"cfg": {k: v for k, v in cfg.items() if k != "name"}, "settings": settings.as_dict()},
                       sort_keys=True, default=str)
@@ -74,7 +114,7 @@ def base_pool(settings: spec.Settings, which: str) -> tuple[list[str], str]:
     return syms, tag
 
 
-def load_features(settings, specs, bars, start, end, symbols, tag, timings, workers) -> pl.DataFrame:
+def load_features(settings, specs, bars, start, end, symbols, tag, timings, workers, members=None) -> pl.DataFrame:
     frames = []
     t0 = time.time()
     for d in bars:
@@ -83,6 +123,8 @@ def load_features(settings, specs, bars, start, end, symbols, tag, timings, work
         x = fc.load(specs, start, end).with_columns(pl.lit(d, dtype=pl.Int16).alias("d"))
         if symbols is not None:
             x = x.filter(pl.col("symbol").is_in(symbols))
+        if members is not None:
+            x = x.join(members, on=["symbol", "date"], how="semi")
         frames.append(x)
     timings["features"] = timings.get("features", 0.0) + time.time() - t0
     return pl.concat(frames, how="diagonal_relaxed")
@@ -140,7 +182,13 @@ def build_panel(cfg, settings, role, bars, start, end, timings, workers, symbols
     specs = list(cfg["features"])
     if cfg["model"]["type"] in SEQ_MODEL_TYPES and not any(f["op"] == "seq_bars" for f in specs):
         specs.append({"op": "seq_bars", "bucket_min": 10})
-    X = load_features(settings, specs, bars, start, end, symbols, tag, timings, workers)
+    memlog(f"{role} start")
+    members = None
+    if role != "book":
+        # T0 rows only where the stock is in that month's fixed base (filter first: ~8x fewer rows)
+        members = base_positions(settings.dataset, start, end, n=settings.base_n, capital=settings.capital).select("symbol", "date")
+    X = load_features(settings, specs, bars, start, end, symbols, tag, timings, workers, members)
+    memlog(f"{role} features loaded {X.shape}")
     t0 = time.time()
     style = cfg["execution"]["style"]
     # one execution table per style covers every allowed decision bar, so it is built once
@@ -155,6 +203,9 @@ def build_panel(cfg, settings, role, bars, start, end, timings, workers, symbols
     daily = store.read_daily(settings.dataset, start - timedelta(days=60), end, symbols=symbols)
     sec = store.read_security(settings.dataset)
     ex = ex.filter(pl.col("d").is_in(sorted(set(bars) | (set(FLATTEN_RETRY) if role == "t0" else set()))))
+    if members is not None:
+        ex = ex.join(members, on=["symbol", "date"], how="semi")
+    memlog(f"{role} exec/auction/daily {ex.shape} {auc.shape} {daily.shape}")
     lab = make_labels(target, ex.filter(pl.col("d").is_in(bars)) if target["kind"] not in ("intraday", "to_flatten")
                       else ex, auc, daily, cal)
     lab = lab.filter(pl.col("d").is_in(bars))
@@ -166,12 +217,15 @@ def build_panel(cfg, settings, role, bars, start, end, timings, workers, symbols
         u = P.universe(daily, sec, cal, xb, rules.universe, cfg.get("universe_filter"))
         unis.append(u.with_columns(pl.lit(d, dtype=pl.Int16).alias("d")))
     uni = pl.concat(unis).rename({"buyable": "buyable_now"})
+    memlog(f"{role} labels {lab.shape} universe {uni.shape}")
     df = (X.select(["symbol", "date", "d", *feat_cols])
           .join(uni, on=["symbol", "date", "d"], how="inner")
           .join(lab, on=["symbol", "date", "d"], how="left")
           .join(ex.select("symbol", "date", "d", "sigma"), on=["symbol", "date", "d"], how="left"))
     if role == "book":
         df = df.filter(pl.col("in_universe"))
+    # float32 features halve the panel's memory
+    df = df.with_columns([pl.col(c).cast(pl.Float32) for c in feat_cols if df.schema[c] == pl.Float64])
     tab = [c for c in feat_cols if c not in set(seq_columns(feat_cols))]
     if len(bars) > 1:
         df = df.with_columns((pl.col("d").cast(pl.Float64) / 240).alias("tod"))
@@ -179,7 +233,9 @@ def build_panel(cfg, settings, role, bars, start, end, timings, workers, symbols
     df = P.cross_section_norm(df.rename({"date": "_date"}).with_columns(
         (pl.col("_date").cast(pl.Int64) * 1000 + pl.col("d").cast(pl.Int64)).alias("date")), tab,
         cfg["cross_section_norm"]).drop("date").rename({"_date": "date"})
+    memlog(f"{role} joined {df.shape}")
     df = norm_label(df, cfg["label_norm"]).sort("date", "d", "symbol")
+    memlog(f"{role} panel done {df.shape}")
     timings["panel"] = timings.get("panel", 0.0) + time.time() - t0
     return df, feat_cols, ex, auc, daily, cal, target
 
@@ -401,6 +457,7 @@ def run_pipeline(cfg_in: dict, settings: spec.Settings, phase: str = "folds", so
         metrics["excess_net_sharpe"] = metrics["sharpe"]
         metrics["top_turnover"] = metrics.get("turnover")
         timings["total"] = time.time() - t_all
+        timings["peak_mem_gb"] = peak_memory_gb()
         metrics["timings"] = {k: round(v, 1) for k, v in timings.items()}
         ledger.finish(run_id, {**metrics, "objective": metrics["objective"]}, timings)
         if save:
