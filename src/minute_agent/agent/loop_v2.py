@@ -173,8 +173,7 @@ Evaluation you will see: every proposal is first screened on one fold (train on 
 If its screen objective is in the top 30% of your screens for that template it is also evaluated on two folds
 (evaluate 2020 and 2021). Both evaluations count against your budget. You never see later years; the final
 choice among your best pipelines is made on unseen data, so prefer robust, economically sensible ideas over
-fitting noise. Known evidence on this data: a 14:50 overnight-return model reaches RankIC ~0.2, but almost all of
-the predictive power is on the losing side (stocks that gap down); the top decile earns little after costs.
+fitting noise.
 
 Each round call `propose_workflow` with one config and a short rationale. Use the history; test one clear idea at a
 time; keep some exploration across templates. Exact duplicates are rejected. New (op, decision time) combinations
