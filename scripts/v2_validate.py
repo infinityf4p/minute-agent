@@ -11,6 +11,9 @@ Rule (fixed before any validation result is seen):
      too few trials of a template).
 
     --dsr-only recomputes step 4 for sessions already in runs/v2_validation.json without running anything.
+    --max-evals N uses only the first N evaluations of each session (equal-budget comparisons); results are stored
+    under "<session>@N". A config already run on the validation period is not run again: its ledger row is reused.
+    --out writes to another file than runs/v2_validation.json.
 
     conda run -n minute-agent python scripts/v2_validate.py <session> [<session> ...] [--k 3]
 """
@@ -77,9 +80,11 @@ def main():
     ap.add_argument("sessions", nargs="+")
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--dsr-only", action="store_true")
+    ap.add_argument("--max-evals", type=int)
+    ap.add_argument("--out")
     a = ap.parse_args()
     ledger = Ledger()
-    p = runs_root() / "v2_validation.json"
+    p = Path(a.out) if a.out else runs_root() / "v2_validation.json"
     var = pooled_var(ledger)
     print("pooled cross-trial variance of daily Sharpe:", {k: round(v, 5) for k, v in var.items()}, flush=True)
     if a.dsr_only:
@@ -96,8 +101,12 @@ def main():
         print("saved", p)
         return
     for s in a.sessions:
-        rows = ledger.query("SELECT * FROM runs WHERE session=?", (s,))
-        n_trials = sum(1 for r in rows if not (r["status"] == "failed" and (r["error"] or "").startswith("interrupted")))
+        rows = ledger.query("SELECT * FROM runs WHERE session=? ORDER BY created_at, run_id", (s,))
+        rows = [r for r in rows if not (r["status"] == "failed" and (r["error"] or "").startswith("interrupted"))]
+        if a.max_evals:
+            rows = rows[: a.max_evals]
+        key = f"{s}@{a.max_evals}" if a.max_evals else s
+        n_trials = len(rows)
         meta = json.loads((runs_root() / "sessions" / s / "session.json").read_text())
         settings = spec.Settings(**meta["settings"])
         folds = [r for r in rows if r["eval_split"] == "folds" and r["status"] == "done" and r["objective"] is not None]
@@ -105,14 +114,20 @@ def main():
         by_t: dict[str, list] = {}
         for r in folds:
             by_t.setdefault(json.loads(r["config_json"])["template"], []).append(r)
-        sess_out = {"n_trials": n_trials, "templates": {}}
+        sess_out = {"n_trials": n_trials, "arm": meta["arm"], "templates": {}}
         for tpl, rs in by_t.items():
             cands = sorted(rs, key=lambda r: -r["objective"])[: a.k]
             evals = []
             for r in cands:
                 cfg = json.loads(r["config_json"])["cfg"]
-                res = run_pipeline(cfg, settings, phase="valid", source="evaluator", session=f"{s}::valid",
-                                   ledger=ledger, verbose=True)
+                done = ledger.query("SELECT run_id, metrics_json FROM runs WHERE config_hash=? AND eval_split='valid' "
+                                    "AND status='done' ORDER BY created_at LIMIT 1", (r["config_hash"],))
+                if done:
+                    res = {"run_id": done[0]["run_id"], "metrics": json.loads(done[0]["metrics_json"])}
+                    print("reuse", res["run_id"], flush=True)
+                else:
+                    res = run_pipeline(cfg, settings, phase="valid", source="evaluator", session=f"{s}::valid",
+                                       ledger=ledger, verbose=True)
                 evals.append({"folds_run": r["run_id"], "folds_objective": r["objective"], "valid_run": res["run_id"],
                               "valid_objective": res["metrics"]["objective"], "valid_sharpe": res["metrics"]["sharpe"],
                               "valid_bp_per_day": res["metrics"]["mean_bp_per_day"],
@@ -123,7 +138,7 @@ def main():
             sess_out["templates"][tpl] = {"candidates": evals, "finalist": best["valid_run"], **ts_all[tpl]}
         print(json.dumps({t: {"finalist": v["finalist"]} for t, v in sess_out["templates"].items()}), flush=True)
         prev = json.loads(p.read_text()) if p.exists() else {}
-        prev[s] = sess_out
+        prev[key] = sess_out
         p.write_text(json.dumps(prev, indent=1, default=str))
         print("saved", s, p, flush=True)   # saved after every session
 

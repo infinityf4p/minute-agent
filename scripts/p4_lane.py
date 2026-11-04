@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("arm", choices=["agent", "random"])
+    ap.add_argument("arm", choices=["agent", "agent2", "random"])   # agent2: scheduler + robust feedback
     ap.add_argument("--seeds", type=int, nargs="+", required=True)
     ap.add_argument("--after")
     ap.add_argument("--budget", type=int, default=100)
@@ -43,7 +43,8 @@ def main():
             random_search(sess)
         else:
             from minute_agent.agent.llm import LLMClient
-            agent_search(sess, LLMClient(log_path=sess.dir / "llm_calls.jsonl", temperature=0.7 + 0.1 * (seed % 3)))
+            agent_search(sess, LLMClient(log_path=sess.dir / "llm_calls.jsonl", temperature=0.7 + 0.1 * (seed % 3)),
+                         scheduler="ts" if a.arm == "agent2" else None)
 
 
 if __name__ == "__main__":

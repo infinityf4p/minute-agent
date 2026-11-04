@@ -182,6 +182,44 @@ and new execution styles cost extra compute the first time.
 ACTION SPACE
 {space}"""
 
+ROBUST = """
+
+ROBUSTNESS RULES FOR THIS SESSION
+- A scheduler assigns the template for each round, from how often each template has produced configs that are
+  positive in BOTH folds (Thompson sampling, every template tried at least {min_n} times). You must propose a
+  config of the assigned template.
+- Judge configs by min_fold = the worse of the two fold objectives, not by the screen result or the fold mean: a
+  single good year is usually noise and does not survive on unseen years. Prefer changes that make a config
+  positive in both years and still positive at 2x costs."""
+
+SCHED_MIN = 2   # proposals per template before the scheduler samples
+
+
+def template_stats(sess: SessionV2) -> dict[str, list[int]]:
+    """Per template: [successes, failures]. Success = promoted to folds and positive in both folds."""
+    st = {t: [0, 0] for t in sess.settings.templates()}
+    rows = sess.rows()
+    folds = {r["config_hash"]: r for r in rows if r["eval_split"] == "folds"}
+    for r in rows:
+        if r["eval_split"] != "screen" or r["record"]["cfg"].get("template") not in st:
+            continue
+        f = folds.get(r["config_hash"])
+        ok = False
+        if f is not None and f["status"] == "done":
+            a, b = f["metrics"].get("fold1_objective"), f["metrics"].get("fold2_objective")
+            ok = a is not None and b is not None and min(a, b) > 0
+        st[r["record"]["cfg"]["template"]][0 if ok else 1] += 1
+    return st
+
+
+def pick_template(sess: SessionV2, rng: random.Random) -> tuple[str, dict]:
+    st = template_stats(sess)
+    under = sorted(t for t, (s, f) in st.items() if s + f < SCHED_MIN)
+    if under:
+        return rng.choice(under), st
+    return max(st, key=lambda t: rng.betavariate(1 + st[t][0], 1 + st[t][1])), st
+
+
 PROPOSE = tool("propose_workflow", "Evaluate one workflow config.", {
     "type": "object",
     "properties": {"config": {"type": "object"}, "rationale": {"type": "string"}},
@@ -217,7 +255,12 @@ def _short(cfg: dict) -> str:
     return " | ".join(parts)
 
 
-def history_text(sess: SessionV2, k_best=8, k_recent=12) -> str:
+def _min_fold(r) -> float | None:
+    a, b = r["metrics"].get("fold1_objective"), r["metrics"].get("fold2_objective")
+    return None if a is None or b is None else min(a, b)
+
+
+def history_text(sess: SessionV2, k_best=8, k_recent=12, robust: bool = False) -> str:
     rows = sess.rows()
     if not rows:
         return "No evaluations yet."
@@ -229,6 +272,7 @@ def history_text(sess: SessionV2, k_best=8, k_recent=12) -> str:
         m = r["metrics"]
         return (f"- [{r['eval_split']}] obj={_fmt(m.get('objective'))} (x2 cost {_fmt(m.get('x2_objective'))}, gross "
                 f"{_fmt(m.get('gross_objective'))}) folds=({_fmt(m.get('fold1_objective'))},{_fmt(m.get('fold2_objective'))}) "
+                + (f"min_fold={_fmt(_min_fold(r))} " if robust and r["eval_split"] == "folds" else "") +
                 f"RankIC={_fmt(m.get('rank_ic'), 4)} {_fmt(m.get('mean_bp_per_day'), 2)}bp/d turnover={_fmt(m.get('turnover'), 2)} "
                 f"t={_fmt(r['t_total'], 0)}s\n    {_short(cfg)}")
     folds = [r for r in rows if r["eval_split"] == "folds" and r["status"] == "done" and r["objective"] is not None]
@@ -237,25 +281,41 @@ def history_text(sess: SessionV2, k_best=8, k_recent=12) -> str:
         by_t.setdefault(r["record"]["cfg"]["template"], []).append(r)
     best = []
     for t, rs in by_t.items():
-        best += sorted(rs, key=lambda r: -r["objective"])[:max(2, k_best // max(len(by_t), 1))]
-    return ("BEST TWO-FOLD RESULTS PER TEMPLATE:\n" + ("\n".join(line(r) for r in best) or "(none yet)")
+        mf = (lambda r: -(_min_fold(r) if _min_fold(r) is not None else -1e9))
+        best += sorted(rs, key=mf if robust else (lambda r: -r["objective"]))[:max(2, k_best // max(len(by_t), 1))]
+    head = "BEST TWO-FOLD RESULTS PER TEMPLATE (by min_fold):\n" if robust else "BEST TWO-FOLD RESULTS PER TEMPLATE:\n"
+    return (head + ("\n".join(line(r) for r in best) or "(none yet)")
             + "\n\nMOST RECENT EVALUATIONS:\n" + "\n".join(line(r) for r in rows[-k_recent:]))
 
 
-def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, reflect_every: int = 10):
+def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, reflect_every: int = 10,
+                 scheduler: str | None = None):
+    """scheduler=None: the agent picks templates freely (P4 arm). "ts": a Thompson-sampling scheduler assigns the
+    template each round and the agent is told to judge configs by the worse fold (robust arm)."""
     costs = CostModel.load(sess.settings.costs)
     system = SYSTEM.format(costs=json.dumps(costs.raw, default=str), ps=sess.settings.position_sizing,
                            t0=sess.settings.allow_t0, space=spec.describe(sess.settings))
+    robust = scheduler == "ts"
+    if robust:
+        system += ROBUST.format(min_n=SCHED_MIN)
+    rng = random.Random(1000 + sess.seed)
     notes_path = sess.dir / "memory.md"
     last = ""
     rounds = 0
     while sess.used() < sess.budget:
         rounds += 1
         if rounds > 1 and rounds % reflect_every == 1:
-            _reflect(sess, client, system, notes_path)
+            _reflect(sess, client, system, notes_path, robust)
         notes = notes_path.read_text(encoding="utf-8") if notes_path.exists() else "(none yet)"
+        want, sched = None, ""
+        if robust:
+            want, st = pick_template(sess, rng)
+            sess.emit(event="schedule", template=want, stats=st)
+            sched = ("SCHEDULER: template successes/failures so far (success = positive in both folds): "
+                     + ", ".join(f"{k} {v[0]}/{v[1]}" for k, v in st.items())
+                     + f".\nThis round you must propose a {want} workflow.\n")
         user = (f"Budget: {sess.used()} of {sess.budget} evaluations used.\n\nYOUR NOTES:\n{notes}\n\n"
-                f"{history_text(sess)}\n\n{last}\nPropose the next workflow.")
+                f"{history_text(sess, robust=robust)}\n\n{last}\n{sched}Propose the next workflow.")
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         cfg = rationale = None
         seen = sess.seen_hashes()
@@ -270,7 +330,9 @@ def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, refle
             try:
                 args = json.loads(call["function"]["arguments"])
                 cand = spec.check(args["config"], sess.settings)
-                if config_hash(cand, sess.settings) in seen:
+                if want and cand["template"] != want:
+                    err = f"This round the template must be {want}."
+                elif config_hash(cand, sess.settings) in seen:
                     err = "This exact config was already evaluated. Propose something different."
                 else:
                     cfg, rationale = cand, args.get("rationale", "")
@@ -296,9 +358,9 @@ def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, refle
     (sess.dir / "llm_usage.json").write_text(json.dumps(client.usage, indent=1))
 
 
-def _reflect(sess, client, system, notes_path):
+def _reflect(sess, client, system, notes_path, robust: bool = False):
     notes = notes_path.read_text(encoding="utf-8") if notes_path.exists() else "(none yet)"
-    user = (f"Consolidate. Current notes:\n{notes}\n\n{history_text(sess, 16, 20)}\n\nRewrite your notes with "
+    user = (f"Consolidate. Current notes:\n{notes}\n\n{history_text(sess, 16, 20, robust)}\n\nRewrite your notes with "
             "update_memory (max ~400 words): what works per template, what fails, constraints, next directions.")
     try:
         msg = client.chat([{"role": "system", "content": system}, {"role": "user", "content": user}], tools=[MEMORY])
