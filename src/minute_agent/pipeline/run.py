@@ -43,6 +43,8 @@ from minute_agent.paths import runs_root
 PHASES = {
     "screen": [(date(2021, 1, 1), date(2021, 12, 31))],
     "folds": [(date(2020, 1, 1), date(2020, 12, 31)), (date(2021, 1, 1), date(2021, 12, 31))],
+    "folds3": [(date(2019, 1, 1), date(2019, 12, 31)), (date(2020, 1, 1), date(2020, 12, 31)),
+               (date(2021, 1, 1), date(2021, 12, 31))],
     "valid": [(split.VALID.start, split.VALID.end)],
     "test": [(split.LOCKED_TEST.start, split.LOCKED_TEST.end)],
 }

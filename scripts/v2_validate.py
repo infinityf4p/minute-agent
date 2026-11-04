@@ -109,7 +109,8 @@ def main():
         n_trials = len(rows)
         meta = json.loads((runs_root() / "sessions" / s / "session.json").read_text())
         settings = spec.Settings(**meta["settings"])
-        folds = [r for r in rows if r["eval_split"] == "folds" and r["status"] == "done" and r["objective"] is not None]
+        folds = [r for r in rows if r["eval_split"] in ("folds", "folds3") and r["status"] == "done"
+                 and r["objective"] is not None]
         ts_all = trial_stats(rows, var)
         by_t: dict[str, list] = {}
         for r in folds:

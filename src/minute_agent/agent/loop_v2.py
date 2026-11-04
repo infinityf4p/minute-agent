@@ -33,12 +33,34 @@ from minute_agent.pipeline.run import config_hash
 INTERRUPTED = "interrupted"
 PROMOTE_Q = 0.7
 PROMOTE_MIN = 3
+FOLD_SPLITS = ("folds", "folds3")
+MIN_AVAILABLE_GB = 12      # wait before starting an evaluation while less memory than this is available
+MAX_MEMORY_WAIT_S = 1800
+
+
+def available_gb() -> float:
+    try:
+        import ctypes
+
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        ms = MS()
+        ms.dwLength = ctypes.sizeof(MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+        return ms.ullAvailPhys / 2 ** 30
+    except Exception:
+        return float("inf")
 
 
 class SessionV2:
     def __init__(self, arm: str, budget: int, settings: spec.Settings, name: str | None = None,
-                 seed: int = 0, ledger_path: Path | None = None, timeout_s: int = 2400):
+                 seed: int = 0, ledger_path: Path | None = None, timeout_s: int = 2400, folds_phase: str = "folds"):
         self.arm, self.budget, self.settings, self.seed = arm, budget, settings, seed
+        self.folds_phase = folds_phase
         self.name = name or f"v2-{arm}-s{seed}-{datetime.now():%Y%m%d-%H%M%S}"
         self.dir = runs_root() / "sessions" / self.name
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +68,8 @@ class SessionV2:
         self.ledger = Ledger(self.ledger_path)
         self.timeout_s = timeout_s
         (self.dir / "session.json").write_text(json.dumps(
-            {"arm": arm, "budget": budget, "seed": seed, "settings": settings.as_dict()}, indent=1))
+            {"arm": arm, "budget": budget, "seed": seed, "settings": settings.as_dict(), "folds_phase": folds_phase},
+            indent=1))
         for r in self.ledger.query("SELECT run_id FROM runs WHERE session=? AND status='running'", (self.name,)):
             self.ledger.fail(r["run_id"], INTERRUPTED)
         self.log = open(self.dir / "log.jsonl", "a", encoding="utf-8")
@@ -72,6 +95,12 @@ class SessionV2:
     # ---- evaluation (subprocess, unlock variable stripped)
 
     def evaluate(self, cfg: dict, phase: str, rationale: str | None) -> dict:
+        waited = 0
+        while available_gb() < MIN_AVAILABLE_GB and waited < MAX_MEMORY_WAIT_S:
+            time.sleep(20)
+            waited += 20
+        if waited:
+            self.emit(event="memory_wait", seconds=waited, available_gb=round(available_gb(), 1))
         chash = config_hash(cfg, self.settings)
         run_id = f"{datetime.now():%Y%m%d-%H%M%S-%f}-{chash}"
         wd = self.dir / "runs"
@@ -121,7 +150,7 @@ class SessionV2:
         sc = out["screen"]
         if sc["status"] == "done" and self.used() < self.budget and np.isfinite(sc["metrics"].get("objective", np.nan)) \
                 and self.promote(cfg["template"], sc["metrics"]["objective"]):
-            out["folds"] = self.evaluate(cfg, "folds", rationale)
+            out["folds"] = self.evaluate(cfg, self.folds_phase, rationale)
         return out
 
     def seen_hashes(self) -> set[str]:
@@ -199,15 +228,15 @@ def template_stats(sess: SessionV2) -> dict[str, list[int]]:
     """Per template: [successes, failures]. Success = promoted to folds and positive in both folds."""
     st = {t: [0, 0] for t in sess.settings.templates()}
     rows = sess.rows()
-    folds = {r["config_hash"]: r for r in rows if r["eval_split"] == "folds"}
+    folds = {r["config_hash"]: r for r in rows if r["eval_split"] in FOLD_SPLITS}
     for r in rows:
         if r["eval_split"] != "screen" or r["record"]["cfg"].get("template") not in st:
             continue
         f = folds.get(r["config_hash"])
         ok = False
         if f is not None and f["status"] == "done":
-            a, b = f["metrics"].get("fold1_objective"), f["metrics"].get("fold2_objective")
-            ok = a is not None and b is not None and min(a, b) > 0
+            mf = _min_fold(f)
+            ok = mf is not None and mf > 0
         st[r["record"]["cfg"]["template"]][0 if ok else 1] += 1
     return st
 
@@ -256,8 +285,9 @@ def _short(cfg: dict) -> str:
 
 
 def _min_fold(r) -> float | None:
-    a, b = r["metrics"].get("fold1_objective"), r["metrics"].get("fold2_objective")
-    return None if a is None or b is None else min(a, b)
+    v = [r["metrics"].get(f"fold{i}_objective") for i in (1, 2, 3)]
+    v = [x for x in v if x is not None]
+    return min(v) if len(v) >= 2 else None
 
 
 def history_text(sess: SessionV2, k_best=8, k_recent=12, robust: bool = False) -> str:
@@ -271,11 +301,11 @@ def history_text(sess: SessionV2, k_best=8, k_recent=12, robust: bool = False) -
             return f"- [{r['eval_split']}] FAILED {_short(cfg)}\n    error: {(r['error'] or '')[-300:]}"
         m = r["metrics"]
         return (f"- [{r['eval_split']}] obj={_fmt(m.get('objective'))} (x2 cost {_fmt(m.get('x2_objective'))}, gross "
-                f"{_fmt(m.get('gross_objective'))}) folds=({_fmt(m.get('fold1_objective'))},{_fmt(m.get('fold2_objective'))}) "
-                + (f"min_fold={_fmt(_min_fold(r))} " if robust and r["eval_split"] == "folds" else "") +
+                f"{_fmt(m.get('gross_objective'))}) folds=({','.join(_fmt(m.get(f'fold{i}_objective')) for i in (1, 2, 3) if m.get(f'fold{i}_objective') is not None)}) "
+                + (f"min_fold={_fmt(_min_fold(r))} " if robust and r["eval_split"] in FOLD_SPLITS else "") +
                 f"RankIC={_fmt(m.get('rank_ic'), 4)} {_fmt(m.get('mean_bp_per_day'), 2)}bp/d turnover={_fmt(m.get('turnover'), 2)} "
                 f"t={_fmt(r['t_total'], 0)}s\n    {_short(cfg)}")
-    folds = [r for r in rows if r["eval_split"] == "folds" and r["status"] == "done" and r["objective"] is not None]
+    folds = [r for r in rows if r["eval_split"] in FOLD_SPLITS and r["status"] == "done" and r["objective"] is not None]
     by_t = {}
     for r in folds:
         by_t.setdefault(r["record"]["cfg"]["template"], []).append(r)
@@ -288,16 +318,34 @@ def history_text(sess: SessionV2, k_best=8, k_recent=12, robust: bool = False) -
             + "\n\nMOST RECENT EVALUATIONS:\n" + "\n".join(line(r) for r in rows[-k_recent:]))
 
 
+def system_prompt(settings: spec.Settings, folds_phase: str = "folds", robust: bool = False) -> str:
+    costs = CostModel.load(settings.costs)
+    system = SYSTEM.format(costs=json.dumps(costs.raw, default=str), ps=settings.position_sizing,
+                           t0=settings.allow_t0, space=spec.describe(settings))
+    if settings.custom_features:
+        from minute_agent.agent.loop import CUSTOM_HELP
+        system += "\n" + CUSTOM_HELP
+    if robust:
+        system += ROBUST.format(min_n=SCHED_MIN)
+    if folds_phase == "folds3":
+        for a, b in [("it is also evaluated on two folds\n(evaluate 2020 and 2021)",
+                      "it is also evaluated on three folds\n(evaluate 2019, 2020 and 2021)"),
+                     ("the worse of the two fold objectives", "the worst of the three fold objectives"),
+                     ("positive in BOTH folds", "positive in ALL three folds"),
+                     ("positive in both years", "positive in every year")]:
+            if a in system:
+                system = system.replace(a, b)
+            elif a.startswith("it is also") or robust:
+                raise AssertionError(f"prompt text not found: {a!r}")
+    return system
+
+
 def agent_search(sess: SessionV2, client: LLMClient, verbose: bool = True, reflect_every: int = 10,
                  scheduler: str | None = None):
     """scheduler=None: the agent picks templates freely (P4 arm). "ts": a Thompson-sampling scheduler assigns the
     template each round and the agent is told to judge configs by the worse fold (robust arm)."""
-    costs = CostModel.load(sess.settings.costs)
-    system = SYSTEM.format(costs=json.dumps(costs.raw, default=str), ps=sess.settings.position_sizing,
-                           t0=sess.settings.allow_t0, space=spec.describe(sess.settings))
     robust = scheduler == "ts"
-    if robust:
-        system += ROBUST.format(min_n=SCHED_MIN)
+    system = system_prompt(sess.settings, sess.folds_phase, robust)
     rng = random.Random(1000 + sess.seed)
     notes_path = sess.dir / "memory.md"
     last = ""

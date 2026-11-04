@@ -59,10 +59,10 @@ def main():
                 tpl[t] += 1
                 if r["status"] == "done" and r["objective"] is not None:
                     per_arm[arm][t].append(r["objective"])
-            if r["eval_split"] == "folds" and r["status"] == "done" and r["objective"] is not None:
+            if r["eval_split"] in ("folds", "folds3") and r["status"] == "done" and r["objective"] is not None:
                 best[t] = max(best.get(t, -1e9), r["objective"])
         fails = sum(r["status"] == "failed" for r in rs)
-        folds = sum(r["eval_split"] == "folds" for r in rs)
+        folds = sum(r["eval_split"] in ("folds", "folds3") for r in rs)
         secs = [r["t_total"] for r in rs if r["t_total"]]
         tok = ""
         u = runs_root() / "sessions" / s / "llm_calls.jsonl"

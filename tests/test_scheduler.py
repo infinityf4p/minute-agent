@@ -37,3 +37,14 @@ def test_untried_templates_first_then_sampling():
             rows.append(row(f"{t}{i}", "folds", t, 1.0, 1.0))
     picks = [loop_v2.pick_template(Stub(rows), rng)[0] for _ in range(200)]
     assert picks.count("T2") > 100
+
+
+def test_three_folds_min_and_prompt():
+    r = {"metrics": {"fold1_objective": 0.4, "fold2_objective": 1.2, "fold3_objective": -0.1}}
+    assert loop_v2._min_fold(r) == -0.1
+    s = spec.Settings(position_sizing=True, allow_t0=True, custom_features=True)
+    p = loop_v2.system_prompt(s, "folds3", robust=True)
+    assert "three folds" in p and "2019" in p and "ALL three folds" in p and "CUSTOM FEATURES" in p
+    assert "two folds" not in p
+    p2 = loop_v2.system_prompt(spec.Settings(position_sizing=True, allow_t0=True), "folds", robust=False)
+    assert "two folds" in p2 and "CUSTOM FEATURES" not in p2

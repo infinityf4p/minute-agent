@@ -31,7 +31,7 @@ def main():
         r = run_pipeline(cfg, st, phase=a.phase, source=a.source, session=a.session, rationale=rationale,
                          ledger=Ledger(a.ledger), run_id=a.run_id, verbose=False, save=True)
         keep = ("objective", "sharpe", "mean_bp_per_day", "ann_ret", "maxdd", "hit", "cost_bp_per_day", "turnover",
-                "x2_objective", "gross_objective", "rank_ic", "fold1_objective", "fold2_objective", "avg_positions",
+                "x2_objective", "gross_objective", "rank_ic", "fold1_objective", "fold2_objective", "fold3_objective", "avg_positions",
                 "avg_exposure", "t0_round_trips_per_stock_day", "t0_win_rate", "t0_carried_overnight_frac",
                 "book_rank_ic", "t0_rank_ic")
         m = {k: (round(v, 5) if isinstance(v, float) else v) for k, v in r["metrics"].items() if k in keep}

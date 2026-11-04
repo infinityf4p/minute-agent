@@ -20,12 +20,15 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", required=True)
     ap.add_argument("--after")
     ap.add_argument("--budget", type=int, default=100)
+    ap.add_argument("--prefix", default="p4")
+    ap.add_argument("--folds3", action="store_true", help="three training folds (2019, 2020, 2021)")
+    ap.add_argument("--custom", action="store_true", help="allow agent-written features (LLM arms only)")
     a = ap.parse_args()
     from minute_agent.agent.loop_v2 import SessionV2, agent_search, random_search
     from minute_agent.experiment.ledger import Ledger
     from minute_agent.pipeline import spec
 
-    st = spec.Settings(position_sizing=True, allow_t0=True)
+    st = spec.Settings(position_sizing=True, allow_t0=True, custom_features=a.custom and a.arm != "random")
     if a.after:
         led = Ledger()
         while True:
@@ -37,7 +40,8 @@ def main():
             time.sleep(300)
         time.sleep(60)   # let the finishing process exit
     for seed in a.seeds:
-        sess = SessionV2(a.arm, a.budget, st, name=f"p4-{a.arm}-s{seed}", seed=seed)
+        sess = SessionV2(a.arm, a.budget, st, name=f"{a.prefix}-{a.arm}-s{seed}", seed=seed,
+                         folds_phase="folds3" if a.folds3 else "folds")
         print("session:", sess.name, flush=True)
         if a.arm == "random":
             random_search(sess)
