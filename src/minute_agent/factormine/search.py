@@ -15,6 +15,8 @@ from minute_agent.factormine.library import Ledger, Library
 
 ARMS = ("llm_code", "llm_dsl", "random")
 BATCH = 4
+LLM_MAX_TOKENS = 32000
+LLM_REASONING = "medium"     # default (high) reasoning used >20k tokens per call on the code arm
 
 
 class Session:
@@ -245,8 +247,8 @@ def run_llm(sess: Session, client) -> None:
         sess.emit(event="round", mechanism=mech, tokens=client.usage)
 
 
-def run(arm: str, seed: int, budget: int, cfg_name: str = "pilot") -> Session:
-    sess = Session(arm, seed, budget, cfg_name)
+def run(arm: str, seed: int, budget: int, cfg_name: str = "pilot", tag: str = "") -> Session:
+    sess = Session(arm, seed, budget, cfg_name, name=f"{cfg_name}-{arm}{tag}-s{seed}")
     sess.emit(event="start", n=sess.n())
     try:
         if arm == "random":
@@ -254,7 +256,7 @@ def run(arm: str, seed: int, budget: int, cfg_name: str = "pilot") -> Session:
         else:
             from minute_agent.agent.llm import LLMClient
             client = LLMClient(log_path=sess.dir / "llm_calls.jsonl", temperature=0.7 + 0.1 * (seed % 3),
-                               max_tokens=20000)
+                               max_tokens=LLM_MAX_TOKENS, extra_body={"reasoning_effort": LLM_REASONING})
             run_llm(sess, client)
     except Exception:
         sess.emit(event="crash", error=traceback.format_exc()[-2000:])

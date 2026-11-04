@@ -16,9 +16,10 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", required=True)
     ap.add_argument("--budget", type=int, default=60)
     ap.add_argument("--cfg", default="pilot")
+    ap.add_argument("--tag", default="", help="suffix of the arm in the session name, e.g. -m")
     a = ap.parse_args()
     for seed in a.seeds:
-        s = search.run(a.arm, seed, a.budget, a.cfg)
+        s = search.run(a.arm, seed, a.budget, a.cfg, a.tag)
         print(f"done {s.name}: {s.n()} candidates, {len(s.lib.found())} factors found", flush=True)
 
 

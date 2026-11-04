@@ -40,6 +40,7 @@ class LLMClient:
     max_tokens: int = 8000
     timeout: int = 300
     log_path: Path | None = None
+    extra_body: dict = field(default_factory=dict)     # e.g. {"reasoning_effort": "medium"}
     usage: dict = field(default_factory=lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
 
     def __post_init__(self):
@@ -47,7 +48,7 @@ class LLMClient:
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, tool_choice=None) -> dict:
         body = {"model": self.model, "messages": messages, "temperature": self.temperature,
-                "max_tokens": self.max_tokens}
+                "max_tokens": self.max_tokens, **self.extra_body}
         if tools:
             body["tools"] = tools
             if tool_choice:
