@@ -46,7 +46,9 @@ def run_code(m: pl.DataFrame, daily: pl.DataFrame, d: int, code: str = "") -> pl
         raise CustomFeatureError("feature() must return a polars DataFrame with symbol and date columns")
     vals = [c for c in out.columns if c not in KEYS]
     if not vals or len(vals) > MAX_CODE_COLS:
-        raise CustomFeatureError(f"feature() must return 1..{MAX_CODE_COLS} value columns")
+        raise CustomFeatureError(f"feature() must return 1..{MAX_CODE_COLS} value columns besides symbol and date, "
+                                 f"got {vals}; drop helper columns at the end, e.g. "
+                                 f"out.select('symbol', 'date', '<col1>', '<col2>')")
     bad = [c for c in vals if not c.isidentifier() or c.startswith("_") or c in data.DAILY_VARS]
     if bad:
         raise CustomFeatureError(f"bad output column names {bad} (identifiers, not daily variable names)")

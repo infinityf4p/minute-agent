@@ -187,6 +187,8 @@ def check_expr(e, variables: set[str], depth: int = 0, count: list | None = None
         raise DSLError(f"combine expression deeper than {MAX_DEPTH}")
     if not isinstance(e, dict):
         raise DSLError("combine nodes must be objects")
+    if e.get("op") == "var" and isinstance(e.get("x"), str) and set(e) == {"op", "x"}:
+        e = {"var": e["x"]}               # tolerate a common LLM spelling of a variable
     if "var" in e:
         if set(e) != {"var"} or e["var"] not in variables:
             raise DSLError(f"unknown variable {e.get('var')!r}; available: {sorted(variables)}")
@@ -374,5 +376,7 @@ def combine_doc(daily_help: dict[str, str]) -> str:
         f"  n in {list(TS_N)} (delta: n <= 20; ts_std/ts_zscore/ts_corr: n >= 5). At most {MAX_NODES} nodes, depth {MAX_DEPTH}.",
         "  variables: your intraday outputs (by name) and these daily variables known at the decision time: "
         + "; ".join(f"{k} = {v}" for k, v in daily_help.items()),
+        '  A variable is written {"var": "a"} (never {"op": "var", ...}). Example: '
+        '{"op": "ts_mean", "x": {"op": "div", "x": {"var": "a"}, "y": {"var": "b"}}, "n": 10}.',
         "  The factor's sign does not matter: the evaluator orients it by its mining-period IC.",
     ])

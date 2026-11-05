@@ -92,3 +92,9 @@ def test_library_rules(tmp_path):
     assert lib.decide(base, {"m1": 0.8, "ref": 0.1}) == ("replaced", "m1", "replaces m1 (corr +0.80)")
     assert lib.decide(base, {"ref": 0.9})[0] == "rejected_redundant"          # fixed members are never replaced
     assert lib.decide(base, {"m1": 0.8, "ref": 0.6})[0] == "rejected_redundant"
+
+
+def test_combine_accepts_op_var_spelling():
+    from minute_agent.factormine import dsl
+    assert dsl.check_expr({"op": "ts_mean", "x": {"op": "var", "x": "a"}, "n": 10}, {"a"}) == \
+        {"op": "ts_mean", "x": {"var": "a"}, "n": 10}

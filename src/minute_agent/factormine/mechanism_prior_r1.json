@@ -1,0 +1,76 @@
+{
+ "sessions": [
+  "pilot-llm_code-m-s0",
+  "pilot-llm_code-m-s1",
+  "pilot-llm_code-m-s2",
+  "pilot-llm_dsl-m-s0",
+  "pilot-llm_dsl-m-s1",
+  "pilot-llm_dsl-m-s2"
+ ],
+ "counts": {
+  "tail_flow": {
+   "admitted": 4,
+   "other": 20
+  },
+  "open_impact": {
+   "admitted": 5,
+   "other": 15
+  },
+  "intraday_reversal": {
+   "admitted": 2,
+   "other": 14
+  },
+  "intraday_momentum": {
+   "admitted": 1,
+   "other": 19
+  },
+  "pv_divergence": {
+   "admitted": 8,
+   "other": 17
+  },
+  "vol_asymmetry": {
+   "admitted": 5,
+   "other": 19
+  },
+  "return_shape": {
+   "admitted": 7,
+   "other": 13
+  },
+  "jumps": {
+   "admitted": 3,
+   "other": 16
+  },
+  "volume_concentration": {
+   "admitted": 7,
+   "other": 13
+  },
+  "vwap_position": {
+   "admitted": 7,
+   "other": 21
+  },
+  "liquidity_impact": {
+   "admitted": 6,
+   "other": 18
+  },
+  "informed_trading": {
+   "admitted": 8,
+   "other": 20
+  },
+  "am_pm_split": {
+   "admitted": 5,
+   "other": 23
+  },
+  "multi_day_dynamics": {
+   "admitted": 5,
+   "other": 19
+  },
+  "overnight_vs_intraday": {
+   "admitted": 2,
+   "other": 18
+  },
+  "attention_shocks": {
+   "admitted": 7,
+   "other": 13
+  }
+ }
+}

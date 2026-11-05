@@ -7,6 +7,7 @@ import json
 import random
 import time
 import traceback
+from pathlib import Path
 
 import numpy as np
 
@@ -17,6 +18,9 @@ ARMS = ("llm_code", "llm_dsl", "random")
 BATCH = 4
 LLM_MAX_TOKENS = 32000
 LLM_REASONING = "medium"     # default (high) reasoning used >20k tokens per call on the code arm
+# Scheduler prior from round-1 LLM sessions (mining-period admission counts per mechanism), down-weighted.
+PRIOR_FILE = Path(__file__).with_name("mechanism_prior_r1.json")
+PRIOR_WEIGHT = 0.5
 
 
 class Session:
@@ -152,9 +156,18 @@ def mechanism_stats(sess: Session) -> dict[str, tuple[int, int]]:
     return {k: (a, b) for k, (a, b) in st.items()}
 
 
+def mechanism_prior() -> dict[str, tuple[float, float]]:
+    if not PRIOR_FILE.exists():
+        return {}
+    c = json.loads(PRIOR_FILE.read_text())["counts"]
+    return {m: (PRIOR_WEIGHT * v["admitted"], PRIOR_WEIGHT * v["other"]) for m, v in c.items()}
+
+
 def pick_mechanism(sess: Session, rng: random.Random) -> str:
     st = mechanism_stats(sess)
-    draws = {m: rng.betavariate(1 + s, 1 + f) for m, (s, f) in st.items()}
+    pr = mechanism_prior()
+    draws = {m: rng.betavariate(1 + s + pr.get(m, (0, 0))[0], 1 + f + pr.get(m, (0, 0))[1])
+             for m, (s, f) in st.items()}
     return max(draws, key=draws.get)
 
 
@@ -178,7 +191,7 @@ def user_prompt(sess: Session, mech: str, feedback: str) -> str:
     for r in rows[-12:]:
         m = json.loads(r["metrics_json"]) if r["metrics_json"] else {}
         recent.append(f"  - #{r['n']} {r['name']} [{r['mechanism']}] {r['status']}: {r['reason'][:160]} | "
-                      f"res_ic={_fmt(m.get('res_ic'))} t={_fmt(m.get('res_t'), 1)} folds="
+                      f"raw_ic={_fmt(m.get('ic'))} res_ic={_fmt(m.get('res_ic'))} t={_fmt(m.get('res_t'), 1)} folds="
                       f"{[round(x, 4) for x in m.get('res_ic_folds', [])]} max_corr={_fmt(m.get('max_lib_corr'), 2)}"
                       f" ({m.get('max_lib_member', '-')})")
     near = []
@@ -243,7 +256,8 @@ def run_llm(sess: Session, client) -> None:
         k = min(BATCH, sess.budget - sess.n())
         res = sess.evaluate_batch(factors[:k], mech)
         feedback = "LAST BATCH:\n" + "\n".join(
-            f"  - {r['name']}: {r['status']} - {r['reason'][:300]}" for r in res) + "\n"
+            f"  - {r['name']}: {r['status']} - {r['reason'][:300]} (raw_ic={_fmt(r['metrics'].get('ic'))}, "
+            f"res_ic={_fmt(r['metrics'].get('res_ic'))})" for r in res) + "\n"
         sess.emit(event="round", mechanism=mech, tokens=client.usage)
 
 

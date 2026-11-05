@@ -59,7 +59,9 @@ residual's rank correlation with the label is the residual IC. A factor enters t
 The library starts with these fixed, well-known intraday factors; new factors must be different from them:
 {seed_lines}
 Simply restating today's return, recent returns, volatility, turnover or size gains nothing: they are
-neutralized. The goal is many distinct, robust factors, not one strong one.
+neutralized. Feedback shows raw_ic (before neutralization) and res_ic: a large raw_ic with a small res_ic means the
+factor mostly restates a style; change what it measures, not its smoothing.
+The goal is many distinct, robust factors, not one strong one.
 
 A FACTOR HAS TWO STAGES
 {intraday}
@@ -83,6 +85,9 @@ CODE_HELP = """- m: minute bars of all stocks for one month, already cut at the 
   down_limit, is_st, is_suspended of the same date (known before the open). Prices are unadjusted.
 - Return a polars DataFrame with columns symbol, date and 1..3 numeric columns (snake_case names, not the names of
   daily variables), one row per stock-day. These names are the variables of the combine stage.
+  Exactly symbol, date and at most 3 more columns: after joins, finish with
+  .select("symbol", "date", "<col1>", ...) so helper columns (pre_close, means, counts) are dropped.
+- polars has no pl.sign/pl.abs/pl.log functions: use expression methods (pl.col("x").sign(), .abs(), .log1p()).
 - Only `import polars as pl`, `import numpy as np`, `import math`. No IO, no dunder attributes, no
   eval/exec/getattr, no map_elements/apply, no lambda, no classes. Use vectorized polars (group_by/agg, over).
 - Runtime limit: 60 seconds per month (about 600 stocks x 21 days x 231 bars). A look-ahead check runs first:
