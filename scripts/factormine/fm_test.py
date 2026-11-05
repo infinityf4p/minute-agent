@@ -1,7 +1,7 @@
 """Primary-metric test of a round: per session, found factors whose validation residual IC keeps the mining sign
 with |t| >= 2; one-sided Mann-Whitney of each LLM arm against random, Holm-adjusted over the LLM arms.
 
-    conda run --no-capture-output -n minute-agent python scripts/factormine/fm_test.py <validation json>
+    conda run --no-capture-output -n minute-agent python scripts/factormine/fm_test.py <result json> [valid|holdout]
 """
 
 from __future__ import annotations
@@ -13,10 +13,10 @@ import numpy as np
 from scipy.stats import mannwhitneyu
 
 
-def primary(s: dict) -> int:
+def primary(s: dict, period: str = "valid") -> int:
     c = 0
     for m in s["members"]:
-        sg, t = np.sign(m["mine"]["res_ic"]), m["valid"].get("res_t")
+        sg, t = np.sign(m["mine"]["res_ic"]), m[period].get("res_t")
         if t is not None and np.isfinite(t) and np.sign(t) == sg and abs(t) >= 2:
             c += 1
     return c
@@ -24,11 +24,13 @@ def primary(s: dict) -> int:
 
 def main():
     v = json.load(open(sys.argv[1]))
+    period = sys.argv[2] if len(sys.argv) > 2 else "valid"
+    v = v.get("sessions", v)
     arms: dict[str, list[tuple[str, int, float | None]]] = {}
     for name, s in v.items():
-        va, vs = s.get("valid_all") or {}, s.get("valid_seeds") or {}
+        va, vs = s.get(f"{period}_all") or {}, s.get(f"{period}_seeds") or {}
         inc = va["res_ic"] - vs["res_ic"] if va.get("res_ic") is not None and vs.get("res_ic") is not None else None
-        arms.setdefault(s["arm"], []).append((name, primary(s), inc))
+        arms.setdefault(s["arm"], []).append((name, primary(s, period), inc))
     for a, xs in arms.items():
         print(f"{a:9s} primary {[x[1] for x in xs]} mean {np.mean([x[1] for x in xs]):.1f} | composite increment "
               f"{[round(x[2], 4) if x[2] is not None else None for x in xs]}")

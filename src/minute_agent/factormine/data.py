@@ -52,7 +52,8 @@ def shift_months(d: date, k: int) -> date:
 
 
 def _clip_unlocked(d: date) -> date:
-    return min(d, split.LOCKED_TEST.start - timedelta(days=1))
+    """Last readable date: 2023-12-31 while locked; the holdout end inside split.final_test_unlock."""
+    return min(d, split.max_readable_date())
 
 
 def universe(cfg: dict) -> list[str]:

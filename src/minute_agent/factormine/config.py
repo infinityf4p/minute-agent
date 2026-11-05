@@ -50,6 +50,16 @@ CONFIGS = {
 }
 
 
+# factormine's own once-only holdout (same dates as the v2 locked test, opened separately for this study).
+HOLDOUT = [(date(2024, 1, 1), date(2024, 12, 31)), (date(2025, 1, 1), date(2025, 12, 31)),
+           (date(2026, 1, 1), date(2026, 10, 31))]
+
+
+def holdout_cfg(cfg: dict) -> dict:
+    """Same study settings, separate cache directory, so holdout values never sit next to the open caches."""
+    return {**cfg, "name": f"{cfg['name']}_holdout", "holdout": HOLDOUT}
+
+
 def get(name: str) -> dict:
     return {**CONFIGS[name], "name": name}
 
